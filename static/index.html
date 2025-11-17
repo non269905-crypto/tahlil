@@ -56,34 +56,43 @@ body{font-family:Tahoma, sans-serif;background:#0f1720;color:#e6eef8;padding:16p
 </div>
 
 <script>
+const API_BASE = "https://tahlil-production.up.railway.app"; // لینک دپلوی شده روی Railway
+
 async function loadData(){
     const symbol = document.getElementById('symbol').value;
     const interval = document.getElementById('interval').value;
     document.getElementById('summary').innerText = 'در حال بارگذاری...';
-    const res = await fetch(`/analyze?symbol=${encodeURIComponent(symbol)}&interval=${interval}&period=7d`);
-    const j = await res.json();
-    if(j.error){
-        alert('Error: '+j.error);
-        return;
-    }
-    const chart = j.chart;
-    const ind = j.indicators;
-    const x = chart.map((r,i)=>i);
-    const cand = { x, open: chart.map(r=>r.Open), high: chart.map(r=>r.High), low: chart.map(r=>r.Low), close: chart.map(r=>r.Close), type:'candlestick', name:'Price' };
-    const ema12 = { x, y: ind.map(r=>r.EMA12), type:'scatter', name:'EMA12' };
-    const ema26 = { x, y: ind.map(r=>r.EMA26), type:'scatter', name:'EMA26' };
-    const bbup = { x, y: ind.map(r=>r.BB_UP), type:'scatter', name:'BB_UP', line:{dash:'dash'} };
-    const bblow = { x, y: ind.map(r=>r.BB_LOW), type:'scatter', name:'BB_LOW', line:{dash:'dash'} };
-    const data = [cand, ema12, ema26, bbup, bblow];
-    Plotly.newPlot('chart', data, {margin:{t:20}, paper_bgcolor:'#0b1220', plot_bgcolor:'#0b1220', font:{color:'#e6eef8'}});
 
-    const trades = j.trades;
-    document.getElementById('summary').innerText = trades.length ? trades.map(t=>`Entry:${t.entry_price.toFixed(2)} Exit:${t.exit_price.toFixed(2)} Ret:${(t.return*100).toFixed(2)}%`).join(' | ') : 'هیچ معامله‌ای ثبت نشده';
-    document.getElementById('metrics').innerText = JSON.stringify(j.metrics,null,2);
-    document.getElementById('interpret').innerHTML = j.interpretation.map(t=>'<div>- '+t+'</div>').join('');
-    const newsRes = await fetch('/news');
-    const news = await newsRes.json();
-    document.getElementById('news').innerText = news.count ? news.news.join('\\n\\n---\\n\\n') : 'خبر یافت نشد';
+    try {
+        const res = await fetch(`${API_BASE}/analyze?symbol=${encodeURIComponent(symbol)}&interval=${interval}&period=7d`);
+        const j = await res.json();
+        if(j.error){
+            alert('Error: '+j.error);
+            return;
+        }
+        const chart = j.chart;
+        const ind = j.indicators;
+        const x = chart.map((r,i)=>i);
+        const cand = { x, open: chart.map(r=>r.Open), high: chart.map(r=>r.High), low: chart.map(r=>r.Low), close: chart.map(r=>r.Close), type:'candlestick', name:'Price' };
+        const ema12 = { x, y: ind.map(r=>r.EMA12), type:'scatter', name:'EMA12' };
+        const ema26 = { x, y: ind.map(r=>r.EMA26), type:'scatter', name:'EMA26' };
+        const bbup = { x, y: ind.map(r=>r.BB_UP), type:'scatter', name:'BB_UP', line:{dash:'dash'} };
+        const bblow = { x, y: ind.map(r=>r.BB_LOW), type:'scatter', name:'BB_LOW', line:{dash:'dash'} };
+        const data = [cand, ema12, ema26, bbup, bblow];
+        Plotly.newPlot('chart', data, {margin:{t:20}, paper_bgcolor:'#0b1220', plot_bgcolor:'#0b1220', font:{color:'#e6eef8'}});
+
+        const trades = j.trades;
+        document.getElementById('summary').innerText = trades.length ? trades.map(t=>`Entry:${t.entry_price.toFixed(2)} Exit:${t.exit_price.toFixed(2)} Ret:${(t.return*100).toFixed(2)}%`).join(' | ') : 'هیچ معامله‌ای ثبت نشده';
+        document.getElementById('metrics').innerText = JSON.stringify(j.metrics,null,2);
+        document.getElementById('interpret').innerHTML = j.interpretation.map(t=>'<div>- '+t+'</div>').join('');
+
+        const newsRes = await fetch(`${API_BASE}/news`);
+        const news = await newsRes.json();
+        document.getElementById('news').innerText = news.count ? news.news.join('\n\n---\n\n') : 'خبر یافت نشد';
+    } catch(e){
+        console.error(e);
+        alert('خطا در بارگذاری داده‌ها. لطفا بعدا امتحان کنید.');
+    }
 }
 
 document.getElementById('btn').addEventListener('click', loadData);
