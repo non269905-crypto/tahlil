@@ -10,10 +10,6 @@ import time
 
 app = FastAPI(title="Trading Analytics Advanced")
 
-# Serve frontend (static/index.html)
-# مطمئن شوید که فایل index.html شما درون پوشه‌ای به نام 'static' قرار دارد
-app.mount("/", StaticFiles(directory="static", html=True), name="static")
-
 # --- Indicators ---
 def EMA(s, span): return s.ewm(span=span, adjust=False).mean()
 def SMA(s, window): return s.rolling(window=window).mean()
@@ -70,7 +66,6 @@ def simple_backtest(df, signal_col='signal'):
     position = None
     for i in range(len(df)-1):
         s = df.iloc[i][signal_col]
-        # اطمینان از اینکه به ردیف بعدی دسترسی داریم
         if i + 1 >= len(df):
             break
             
@@ -91,7 +86,6 @@ def simple_backtest(df, signal_col='signal'):
             })
             position = None
             
-    # بستن پوزیشن باز در انتهای دیتا
     if position is not None:
         last_price = float(df.iloc[-1]['Close'])
         ret = (last_price - position['entry_price']) / position['entry_price']
@@ -110,24 +104,20 @@ def simple_backtest(df, signal_col='signal'):
 
 # --- Fetch OHLC ---
 def fetch_ohlc(symbol, interval, period='7d'):
-    # غیرفعال کردن progress bar و threads برای سازگاری بهتر با سرور
     df = yf.download(symbol, period=period, interval=interval, progress=False, threads=False)
     if df is None or df.empty:
         raise ValueError("No data returned for symbol/interval")
-    # اطمینان از اینکه ایندکس Datetime است (برای yfinance معمولا هست)
     df.index = pd.to_datetime(df.index)
     return df
 
 # --- Interpretations ---
 def interpret(df):
-    # اطمینان از اینکه دیتایی برای تفسیر وجود دارد
     if df.empty:
         return ["No data for interpretation."]
         
     last = df.iloc[-1]
     texts = []
     
-    # بررسی مقادیر NaN قبل از مقایسه
     if pd.notna(last['EMA12']) and pd.notna(last['EMA26']):
         if last['EMA12'] > last['EMA26']:
             texts.append("EMA12 above EMA26 → short-term bullish trend")
@@ -153,20 +143,16 @@ def interpret(df):
 
 # --- API endpoints ---
 
-# ✅ اصلاح شده: تبدیل به async def
+# ✅✅✅ اول: روت‌های API (مانند /analyze) باید *قبل از* app.mount تعریف شوند
 @app.get("/analyze")
 async def analyze(symbol: str = Query("GC=F"), interval: str = Query("5m"), period: str = Query("7d")):
     try:
-        # این توابع (که sync هستند) به صورت خودکار توسط FastAPI
-        # در یک ترد جداگانه اجرا می‌شوند تا سرور قفل نشود
         df = fetch_ohlc(symbol, interval, period=period)
         df_signals = generate_signals(df)
         trades, metrics = simple_backtest(df_signals)
         interp = interpret(df_signals)
         
-        # تبدیل ایندکس (تاریخ) به ستون برای ارسال در JSON
         chart_df = df_signals[['Open','High','Low','Close']].tail(200).reset_index()
-        # اطمینان از اینکه تاریخ‌ها به فرمت رشته‌ای مناسب (ISO) تبدیل می‌شوند
         chart_df['index'] = chart_df['index'].astype(str)
         chart = chart_df.to_dict(orient='records')
         
@@ -176,10 +162,8 @@ async def analyze(symbol: str = Query("GC=F"), interval: str = Query("5m"), peri
 
         return {"chart": chart, "indicators": indicators, "trades": trades, "metrics": metrics, "interpretation": interp}
     except Exception as e:
-        # برگرداندن خطای واضح‌تر در پاسخ JSON
         return JSONResponse({"error": str(e)}, status_code=500)
 
-# ✅ اصلاح شده: تبدیل به async def (چون requests هم I/O است)
 @app.get("/news")
 async def news():
     sources = [
@@ -187,18 +171,17 @@ async def news():
         "https://finance.yahoo.com/rss/topstories"
     ]
     items = []
-    # نکته: در یک اپلیکیشن async واقعی، باید از یک کتابخانه http async
-    # مانند 'httpx' استفاده کرد، اما 'requests' هم به لطف FastAPI کار می‌کند
-    # هرچند بهینه نیست
     for s in sources:
         try:
-            # timeout کوتاه برای جلوگیری از قفل شدن طولانی
             r = requests.get(s, timeout=5)
             if r.status_code == 200:
-                # گرفتن 2000 کاراکتر اول برای جلوگیری از حجم بالای دیتا
                 items.append(r.text[:2000])
         except requests.RequestException:
-            # نادیده گرفتن خطاهای فچ کردن اخبار (مثل timeout)
             continue
             
     return {"news": items, "count": len(items), "time": time.time()}
+
+
+# ✅✅✅ آخر: روت فایل استاتیک (/) باید *در انتها* تعریف شود
+# این کد به درستی فایل index.html شما را از پوشه 'static' سرو می‌کند
+app.mount("/", StaticFiles(directory="static", html=True), name="static")
