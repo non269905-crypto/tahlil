@@ -41,25 +41,47 @@ def bollinger(series, window=20, stds=2):
 
 # main.py (فقط این تابع را جایگزین کنید)
 
+# main.py (فقط این تابع را جایگزین کنید)
+
 # --- Signals and simple backtest ---
 def generate_signals(df):
     df = df.copy()
     if df.empty: 
         return df
         
-    # 1. محاسبه اندیکاتورها (در اینجا NaNها اضافه می‌شوند)
+    # 1. محاسبه اندیکاتورها
     df['EMA12'] = EMA(df['Close'], 12)
     df['EMA26'] = EMA(df['Close'], 26)
     df['RSI14'] = RSI(df['Close'], 14)
     df['MACD'], df['MACD_SIGNAL'], df['MACD_HIST'] = MACD(df['Close'])
     df['BB_UP'], df['BB_MID'], df['BB_LOW'] = bollinger(df['Close'])
 
-    # ✅ اصلاح حیاتی: حذف ردیف‌هایی که اندیکاتورهای اصلی آن‌ها NaN است.
-    # این کار تضمین می‌کند که مقایسه‌های منطقی بعدی (df.loc) با مقادیر NaN مواجه نشوند.
-    df.dropna(subset=['EMA26', 'RSI14', 'MACD_SIGNAL'], inplace=True)
+    # ✅ اصلاح حیاتی برای رفع خطای Ambiguous و ستون‌های گمشده:
+    # حذف ردیف‌هایی که اندیکاتورهای اصلی در آن‌ها NaN است.
+    # این کار باید پس از محاسبه اندیکاتورها انجام شود.
+    required_cols = ['EMA26', 'RSI14', 'MACD_SIGNAL']
+    
+    # 2. بررسی وجود ستون‌ها قبل از dropna (برای اطمینان بیشتر)
+    if not all(col in df.columns for col in required_cols):
+        # اگر به هر دلیلی ستون‌ها ایجاد نشده‌اند، اینجا کرش می‌کنیم
+        raise ValueError(f"Required indicator columns are missing: {required_cols}")
+
+    df.dropna(subset=required_cols, inplace=True)
     
     if df.empty:
-        return df # اگر پس از حذف NaN چیزی نماند، خالی برگردان
+        return df # اگر پس از حذف NaN، دیتافریم خالی شد، خالی برگردان
+
+    # 3. تولید سیگنال بر روی دیتای تمیز
+    # MACD crossover signal and RSI filter
+    df['MACD_cross'] = (df['MACD'] > df['MACD_SIGNAL']).astype(int)
+    df['signal'] = 0
+    # buy: MACD crosses above AND RSI not extreme
+    df.loc[(df['MACD_cross'].diff() == 1) & (df['RSI14'] < 75), 'signal'] = 1
+    # sell: MACD crosses below OR RSI extremely high
+    df.loc[(df['MACD_cross'].diff() == -1) | (df['RSI14'] > 85), 'signal'] = -1
+    
+    df['signal'].fillna(0, inplace=True) 
+    return df
 
     # 2. تولید سیگنال بر روی دیتای تمیز
     # MACD crossover signal and RSI filter
@@ -219,4 +241,5 @@ async def news():
 
 # ✅ انتقال app.mount به انتهای فایل (برای رفع 404)
 app.mount("/", StaticFiles(directory="static", html=True), name="static")
+
 
