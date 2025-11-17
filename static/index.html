@@ -4,38 +4,38 @@
 <meta charset="utf-8"/>
 <title>Hybrid Trading Dashboard</title>
 
-<!-- Lightweight Charts CDN (نسخه سالم و تضمینی) -->
-<script src="https://cdn.jsdelivr.net/npm/lightweight-charts/dist/lightweight-charts.standalone.production.js"></script>
+<!-- ⛔ نسخه اشتباه نگذارید → ONLY THIS WORKS -->
+<script src="https://cdn.jsdelivr.net/npm/lightweight-charts@4.2.1/dist/lightweight-charts.standalone.production.js"></script>
 
-<link rel="stylesheet" href="style.css" />
+<link rel="stylesheet" href="style.css">
 </head>
-<body>
 
+<body>
 <div class="container">
     <h2>داشبورد ترکیبی — Binance / TwelveData / Yahoo + ForexFactory</h2>
 
     <div class="controls">
         <label>نماد:
-            <select id="symbol" class="select"></select>
+            <input id="symbol" class="select" value="BTCUSDT" />
         </label>
 
         <label>منبع:
             <select id="source" class="select">
-                <option value="binance">Binance (Crypto)</option>
+                <option value="binance">Binance</option>
                 <option value="twelve">TwelveData</option>
                 <option value="yahoo">YahooQuery</option>
             </select>
         </label>
 
-        <label>تایم:
+        <label>تایم‌فریم:
             <select id="interval" class="select">
-                <option>1m</option>
-                <option>5m</option>
-                <option>15m</option>
-                <option>30m</option>
+                <option>1min</option>
+                <option>5min</option>
+                <option>15min</option>
+                <option>30min</option>
                 <option selected>1h</option>
                 <option>4h</option>
-                <option>1d</option>
+                <option>1day</option>
             </select>
         </label>
 
@@ -45,8 +45,8 @@
     <div id="chart"></div>
 
     <div class="panel">
-        <strong>خلاصه معاملات:</strong>
-        <span id="summary">-</span>
+        <strong>خلاصه معاملات:</strong> <span id="summary">-</span><br>
+        <strong>متریک‌ها:</strong>
         <pre id="metrics" class="small"></pre>
     </div>
 
@@ -56,15 +56,14 @@
     </div>
 
     <div class="panel">
-        <h4>اخبار</h4>
+        <h4>اخبار (Yahoo + ForexFactory)</h4>
         <pre id="news" class="small">—</pre>
     </div>
 
     <div class="panel">
-        <h4>تقویم اقتصادی</h4>
+        <h4>تقویم اقتصادی (ForexFactory)</h4>
         <pre id="ff" class="small">—</pre>
     </div>
-
 </div>
 
 <script src="app.js"></script>
