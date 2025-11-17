@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="fa">
+<head>
+<meta charset="utf-8"/>
+<title>داشبورد معاملات پیشرفته</title>
+<script src="https://cdn.plot.ly/plotly-2.30.0.min.js"></script>
+<style>
+body{font-family:Tahoma, sans-serif;background:#0f1720;color:#e6eef8;padding:16px;direction:rtl;}
+.container{max-width:1100px;margin:auto;}
+.controls{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:12px;}
+.select{padding:6px;border-radius:6px;background:#071122;color:#e6eef8;border:1px solid #1f2a36;}
+.btn{background:#1f6feb;color:white;padding:8px 12px;border-radius:6px;border:none;cursor:pointer;}
+#chart{width:100%;height:520px;background:#081221;border-radius:6px;padding:6px;}
+.news{background:#081221;padding:10px;border-radius:6px;margin-top:12px;max-height:220px;overflow:auto;}
+.panel{margin-top:10px;background:#081221;padding:10px;border-radius:6px;}
+.small{font-size:0.9rem;color:#9fb0c8;}
+</style>
+</head>
+<body>
+<div class="container">
+<h2>داشبورد تحلیل معاملات — نسخه پیشرفته</h2>
+<div class="controls">
+<label>نماد:
+<select id="symbol" class="select">
+<option value="GC=F">Gold (GC=F)</option>
+<option value="EURUSD=X">EUR/USD</option>
+<option value="BTC-USD">BTC/USD</option>
+</select>
+</label>
+
+<label>تایم‌فریم:
+<select id="interval" class="select">
+<option value="1m">1m</option>
+<option value="5m" selected>5m</option>
+<option value="15m">15m</option>
+<option value="1h">1h</option>
+<option value="1d">1d</option>
+</select>
+</label>
+
+<button id="btn" class="btn">بارگذاری</button>
+</div>
+
+<div id="chart"></div>
+
+<div class="panel">
+<strong>خلاصه معاملات:</strong> <span id="summary">-</span><br>
+<strong>متریک‌ها:</strong> <pre id="metrics" class="small"></pre>
+</div>
+
+<h3>تفسیر خودکار</h3>
+<div class="panel" id="interpret"></div>
+
+<h3>اخبار</h3>
+<div class="news" id="news">برای دریافت اخبار دکمه بارگذاری را بزنید</div>
+</div>
+
+<script>
+async function loadData(){
+    const symbol = document.getElementById('symbol').value;
+    const interval = document.getElementById('interval').value;
+    document.getElementById('summary').innerText = 'در حال بارگذاری...';
+    const res = await fetch(`/analyze?symbol=${encodeURIComponent(symbol)}&interval=${interval}&period=7d`);
+    const j = await res.json();
+    if(j.error){
+        alert('Error: '+j.error);
+        return;
+    }
+    const chart = j.chart;
+    const ind = j.indicators;
+    const x = chart.map((r,i)=>i);
+    const cand = { x, open: chart.map(r=>r.Open), high: chart.map(r=>r.High), low: chart.map(r=>r.Low), close: chart.map(r=>r.Close), type:'candlestick', name:'Price' };
+    const ema12 = { x, y: ind.map(r=>r.EMA12), type:'scatter', name:'EMA12' };
+    const ema26 = { x, y: ind.map(r=>r.EMA26), type:'scatter', name:'EMA26' };
+    const bbup = { x, y: ind.map(r=>r.BB_UP), type:'scatter', name:'BB_UP', line:{dash:'dash'} };
+    const bblow = { x, y: ind.map(r=>r.BB_LOW), type:'scatter', name:'BB_LOW', line:{dash:'dash'} };
+    const data = [cand, ema12, ema26, bbup, bblow];
+    Plotly.newPlot('chart', data, {margin:{t:20}, paper_bgcolor:'#0b1220', plot_bgcolor:'#0b1220', font:{color:'#e6eef8'}});
+
+    const trades = j.trades;
+    document.getElementById('summary').innerText = trades.length ? trades.map(t=>`Entry:${t.entry_price.toFixed(2)} Exit:${t.exit_price.toFixed(2)} Ret:${(t.return*100).toFixed(2)}%`).join(' | ') : 'هیچ معامله‌ای ثبت نشده';
+    document.getElementById('metrics').innerText = JSON.stringify(j.metrics,null,2);
+    document.getElementById('interpret').innerHTML = j.interpretation.map(t=>'<div>- '+t+'</div>').join('');
+    const newsRes = await fetch('/news');
+    const news = await newsRes.json();
+    document.getElementById('news').innerText = news.count ? news.news.join('\\n\\n---\\n\\n') : 'خبر یافت نشد';
+}
+
+document.getElementById('btn').addEventListener('click', loadData);
+</script>
+</body>
+</html>
