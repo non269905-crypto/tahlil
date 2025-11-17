@@ -1,0 +1,20 @@
+body{
+    font-family:tahoma, sans-serif;
+    background:#071221;
+    color:#e6eef8;
+    direction:rtl;
+    padding:12px;
+}
+.container{max-width:1200px;margin:auto;}
+.controls{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:12px;}
+.select, input, button{
+    padding:8px;
+    border-radius:6px;
+    background:#0b1a2a;
+    border:1px solid #173147;
+    color:#e6eef8;
+}
+#chart{height:520px;background:#071221;border-radius:6px;padding:6px;}
+.panel{margin-top:12px;background:#081826;padding:12px;border-radius:6px;}
+.small{font-size:0.9rem;color:#9fb0c8;}
+.btn{background:#1f8cff;border:none;padding:8px 14px;border-radius:6px;color:#fff;cursor:pointer;}
