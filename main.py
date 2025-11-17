@@ -1,148 +1,313 @@
-<!doctype html>
-<html lang="fa">
-<head>
-<meta charset="utf-8"/>
-<title>Hybrid Trading Dashboard (MultiSource)</title>
-<script src="https://unpkg.com/lightweight-charts@3.9.0/dist/lightweight-charts.standalone.production.js"></script>
-<style>
-body{font-family:tahoma, sans-serif;background:#071221;color:#e6eef8;padding:12px;direction:rtl;}
-.container{max-width:1200px;margin:auto;}
-.controls{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:12px;}
-.select, input, button{padding:8px;border-radius:6px;background:#0b1a2a;border:1px solid #173147;color:#e6eef8;}
-#chart{height:520px;background:#071221;border-radius:6px;padding:6px;}
-.panel{margin-top:12px;background:#081826;padding:10px;border-radius:6px;}
-.small{font-size:0.9rem;color:#9fb0c8;}
-.btn{background:#1f8cff;border:none;padding:8px 12px;border-radius:6px;color:#fff;cursor:pointer}
-</style>
-</head>
-<body>
-<div class="container">
-<h2>داشبورد ترکیبی — Binance / TwelveData / Yahoo + ForexFactory</h2>
-<div class="controls">
-<label>نماد:
-<input id="symbol" class="select" value="BTCUSDT" />
-</label>
-<label>منبع:
-<select id="source" class="select">
-  <option value="binance">Binance (Crypto)</option>
-  <option value="twelve">TwelveData (Stocks/FX)</option>
-  <option value="yahoo">YahooQuery (Fallback)</option>
-</select>
-</label>
-<label>تایمفریم:
-<select id="interval" class="select">
-<option>1min</option><option>5min</option><option>15min</option><option>30min</option><option selected>1h</option><option>4h</option><option>1day</option>
-</select>
-</label>
-<button id="btn" class="btn">بارگذاری</button>
-</div>
+# main.py
+import os, time, requests, math
+from functools import wraps
+from typing import List
+import numpy as np
+import pandas as pd
+from fastapi import FastAPI, Query
+from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
+from yahooquery import Ticker
+import feedparser
 
-<div id="chart"></div>
+TWELVE_API = os.getenv("TWELVEDATA_API_KEY", "").strip()
 
-<div class="panel">
-<strong>خلاصه معاملات:</strong> <span id="summary">-</span><br>
-<strong>متریک‌ها:</strong> <pre id="metrics" class="small"></pre>
-</div>
+app = FastAPI(title="Hybrid Trading Analysis - MultiSource")
 
-<div class="panel">
-<h4>تحلیل ترکیبی (تکنیکال + اخبار)</h4>
-<div id="interpret"></div>
-</div>
+# ---------- simple in-memory cache (TTL) ----------
+_cache = {}
+def cache_ttl(ttl=30):
+    def deco(func):
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            key = (func.__name__, args, tuple(sorted(kwargs.items())))
+            now = time.time()
+            if key in _cache:
+                val, exp = _cache[key]
+                if now < exp:
+                    return val
+            val = func(*args, **kwargs)
+            _cache[key] = (val, now + ttl)
+            return val
+        return wrapper
+    return deco
 
-<div class="panel">
-<h4>اخبار (Yahoo + ForexFactory)</h4>
-<pre id="news" class="small">—</pre>
-</div>
+# ---------- indicators ----------
+def EMA(s, span): return s.ewm(span=span, adjust=False).mean()
+def SMA(s, window): return s.rolling(window=window).mean()
+def RSI(series, period=14):
+    delta = series.diff()
+    up = delta.clip(lower=0)
+    down = -delta.clip(upper=0)
+    ma_up = up.ewm(com=period - 1, adjust=True, min_periods=period).mean()
+    ma_down = down.ewm(com=period - 1, adjust=True, min_periods=period).mean()
+    rs = ma_up / ma_down
+    rs[ma_down == 0] = np.inf
+    return 100 - (100 / (1 + rs))
+def MACD(series, s_short=12, s_long=26, s_signal=9):
+    ema_short = EMA(series, s_short)
+    ema_long = EMA(series, s_long)
+    macd = ema_short - ema_long
+    signal = macd.ewm(span=s_signal, adjust=False).mean()
+    hist = macd - signal
+    return macd, signal, hist
+def bollinger(series, window=20, stds=2):
+    ma = series.rolling(window).mean()
+    std = series.rolling(window).std()
+    upper = ma + stds * std
+    lower = ma - stds * std
+    return upper, ma, lower
 
-<div class="panel">
-<h4>تقویم اقتصادی (ForexFactory)</h4>
-<pre id="ff" class="small">—</pre>
-</div>
-</div>
-
-<script>
-const API_BASE = "";
-
-let chart, candleSeries, ema12Series, ema26Series;
-
-function initChart(){
-    const container = document.getElementById('chart');
-    chart = LightweightCharts.createChart(container, {
-        width: container.clientWidth,
-        height: 520,
-        layout: { background: { color: '#071221' }, textColor: '#e6eef8' },
-        grid: { vertLines: { color: '#0b2230' }, horzLines: { color: '#0b2230' } },
-        rightPriceScale: { borderColor: '#0b2230' },
-        timeScale: { borderColor: '#0b2230' }
-    });
-    candleSeries = chart.addCandlestickSeries();
-    ema12Series = chart.addLineSeries({lineWidth:1, priceLineVisible:false});
-    ema26Series = chart.addLineSeries({lineWidth:1, priceLineVisible:false});
-    window.addEventListener('resize', ()=> chart.applyOptions({width:container.clientWidth}));
-}
-
-function prepareTime(tstr){
-    const d = new Date(tstr);
-    if (isNaN(d)) {
-        // try parse as UTC string
-        return (new Date(tstr)).toISOString();
+# ---------- fetchers ----------
+@cache_ttl(ttl=60)
+def fetch_ohlc_twelvedata(symbol, interval, outputsize=500, timezone="UTC"):
+    if not TWELVE_API:
+        raise ValueError("TWELVEDATA_API_KEY not configured")
+    url = "https://api.twelvedata.com/time_series"
+    params = {
+        "symbol": symbol,
+        "interval": interval,
+        "outputsize": outputsize,
+        "timezone": timezone,
+        "format": "JSON",
+        "apikey": TWELVE_API
     }
-    return d.toISOString();
-}
+    r = requests.get(url, params=params, timeout=10)
+    if r.status_code != 200:
+        raise ValueError(f"TwelveData HTTP {r.status_code}")
+    j = r.json()
+    if "values" not in j:
+        raise ValueError(f"TwelveData error: {j.get('message') or j}")
+    vals = j["values"]
+    df = pd.DataFrame(vals).astype(float)
+    df = df.sort_values("datetime").reset_index(drop=True)
+    df['datetime'] = pd.to_datetime(df['datetime'])
+    df.set_index('datetime', inplace=True)
+    df.rename(columns={"open":"Open","high":"High","low":"Low","close":"Close","volume":"Volume"}, inplace=True)
+    return df
 
-async function loadData(){
-    const symbol = document.getElementById('symbol').value;
-    const interval = document.getElementById('interval').value;
-    const source = document.getElementById('source').value;
-    document.getElementById('summary').innerText = 'در حال بارگذاری...';
-    try{
-        const res = await fetch(`/analyze?symbol=${encodeURIComponent(symbol)}&interval=${interval}&source=${source}&limit=500`);
-        const j = await res.json();
-        if(j.error){ alert('Error: '+j.error); document.getElementById('summary').innerText='خطا'; return; }
-        if(!j.chart || !j.chart.length){ alert('No data'); document.getElementById('summary').innerText='داده‌ای نیست'; return; }
+@cache_ttl(ttl=60)
+def fetch_ohlc_yahooquery(symbol, interval, period='7d'):
+    t = Ticker(symbol)
+    df = t.history(interval=interval, period=period)
+    if df is None or df.empty:
+        raise ValueError("No data from yahooquery")
+    local = df.copy() if isinstance(df, pd.DataFrame) else pd.DataFrame(df)
+    local.columns = [c.capitalize() if c.lower() in ['open','high','low','close','volume'] else c for c in local.columns]
+    if 'datetime' in local.columns:
+        local['datetime'] = pd.to_datetime(local['datetime'])
+        local.set_index('datetime', inplace=True)
+    if not set(['Open','High','Low','Close']).issubset(set(local.columns)):
+        raise ValueError("yahooquery missing ohlc")
+    return local
 
-        const cdata = j.chart.map(r=>({
-            time: prepareTime(r.datetime || r.index || r.date),
-            open: parseFloat(r.Open),
-            high: parseFloat(r.High),
-            low: parseFloat(r.Low),
-            close: parseFloat(r.Close)
-        }));
-        candleSeries.setData(cdata);
+@cache_ttl(ttl=60)
+def fetch_ohlc_binance(symbol, interval="1h", limit=500):
+    # Binance expects symbols like BTCUSDT
+    url = "https://api.binance.com/api/v3/klines"
+    params = {"symbol": symbol.upper(), "interval": interval, "limit": limit}
+    r = requests.get(url, params=params, timeout=10)
+    if r.status_code != 200:
+        raise ValueError(f"Binance HTTP {r.status_code}: {r.text[:200]}")
+    j = r.json()
+    if not isinstance(j, list):
+        raise ValueError("Invalid Binance response")
+    rows = []
+    for k in j:
+        rows.append({
+            "datetime": pd.to_datetime(k[0], unit='ms'),
+            "Open": float(k[1]),
+            "High": float(k[2]),
+            "Low": float(k[3]),
+            "Close": float(k[4]),
+            "Volume": float(k[5])
+        })
+    df = pd.DataFrame(rows).set_index("datetime")
+    return df
 
-        // indicators alignment
-        const inds = j.indicators || [];
-        const ema12 = inds.map((it, idx)=>({ time: cdata[idx] ? cdata[idx].time : prepareTime(it.datetime || it.index), value: it['EMA12'] })).filter(x=>x.value!=null);
-        const ema26 = inds.map((it, idx)=>({ time: cdata[idx] ? cdata[idx].time : prepareTime(it.datetime || it.index), value: it['EMA26'] })).filter(x=>x.value!=null);
-        ema12Series.setData(ema12);
-        ema26Series.setData(ema26);
+def fetch_ohlc(symbol, interval, limit_or_period=500, source="twelve"):
+    source = (source or "twelve").lower()
+    if source == "binance":
+        return fetch_ohlc_binance(symbol, interval, limit_or_period)
+    if source == "twelve":
+        return fetch_ohlc_twelvedata(symbol, interval, outputsize=limit_or_period)
+    if source == "yahoo":
+        return fetch_ohlc_yahooquery(symbol, interval, period=f"{max(1,int(limit_or_period/24))}d")
+    raise ValueError("Unknown source")
 
-        // trades markers
-        const markers = [];
-        (j.trades||[]).forEach(t=>{
-            markers.push({ time: prepareTime(t.entry_time), position: 'belowBar', color: t.return>0 ? 'green' : 'red', shape:'arrowUp', text: 'Entry' });
-            markers.push({ time: prepareTime(t.exit_time), position: 'aboveBar', color: t.return>0 ? 'green' : 'red', shape:'arrowDown', text: 'Exit' });
-        });
-        candleSeries.setMarkers(markers);
+# ---------- ForexFactory RSS ----------
+@cache_ttl(ttl=300)
+def fetch_forexfactory(limit=30):
+    url = "https://cdn-nfs.faireconomy.media/ff_calendar_thisweek.xml"
+    try:
+        feed = feedparser.parse(url)
+        items = []
+        for e in feed.entries[:limit]:
+            # feedparser fields may vary; take summary/detail where present
+            title = e.get("title","")
+            published = e.get("published","")
+            # Some feeds include tags with importance - try to parse
+            # put raw content for safety
+            items.append({"title":title,"published":published,"raw":e})
+        return items
+    except Exception:
+        return []
 
-        document.getElementById('metrics').innerText = JSON.stringify(j.metrics || {}, null, 2);
-        document.getElementById('summary').innerText = (j.trades && j.trades.length) ? j.trades.map(t=>`Entry:${t.entry_price.toFixed(6)} Exit:${t.exit_price.toFixed(6)} Ret:${(t.return*100).toFixed(2)}%`).join(' | ') : 'هیچ معامله‌ای';
-        document.getElementById('interpret').innerText = (j.interpretation||[]).join('\n');
-        document.getElementById('news').innerText = (j.headlines && j.headlines.length) ? j.headlines.join('\n\n---\n\n') : 'خبری نیست';
-        // ForexFactory block
-        if(j.forexfactory && j.forexfactory.length){
-            document.getElementById('ff').innerText = j.forexfactory.map(x=>`${x.published} — ${x.title}`).join('\n\n---\n\n');
-        } else {
-            document.getElementById('ff').innerText = 'تازه‌ترین اخبار تقویم اقتصادی در دسترس نیست';
+# ---------- simple news / headlines (yahooquery primary) ----------
+@cache_ttl(ttl=120)
+def fetch_news_for_symbol(symbol, limit=10):
+    headlines = []
+    try:
+        t = Ticker(symbol)
+        j = t.news
+        if isinstance(j, dict):
+            # sometimes keyed by symbol
+            for k in j:
+                for it in j[k][:limit]:
+                    if it:
+                        headlines.append(it.get("title") or it.get("headline") or "")
+        elif isinstance(j, list):
+            for it in j[:limit]:
+                headlines.append(it.get("title") or it.get("headline") or "")
+    except Exception:
+        pass
+    # add forex factory top headlines too
+    try:
+        ff = fetch_forexfactory(10)
+        for f in ff[:limit]:
+            headlines.append(f.get("title",""))
+    except:
+        pass
+    return [h for h in headlines if h]
+
+# ---------- simple sentiment ----------
+POS = {"up","rise","positive","beat","strong","gain","higher","cut","eased","easing","surge","rise"}
+NEG = {"down","drop","miss","weak","loss","lower","bear","bearish","hike","higher-than-expected","surge","inflation"}
+def headline_sentiment(headline):
+    h = str(headline).lower()
+    s = 0
+    for w in POS:
+        if w in h: s += 1
+    for w in NEG:
+        if w in h: s -= 1
+    return s
+
+# ---------- signals / backtest ----------
+def generate_signals(df):
+    df = df.copy()
+    if df.empty:
+        return df
+    df['EMA12'] = EMA(df['Close'], 12)
+    df['EMA26'] = EMA(df['Close'], 26)
+    df['RSI14'] = RSI(df['Close'], 14)
+    df['MACD'], df['MACD_SIGNAL'], df['MACD_HIST'] = MACD(df['Close'])
+    df['BB_UP'], df['BB_MID'], df['BB_LOW'] = bollinger(df['Close'])
+    df.dropna(subset=['EMA26','RSI14','MACD_SIGNAL'], inplace=True)
+    if df.empty:
+        return df
+    df['MACD_cross'] = (df['MACD'] > df['MACD_SIGNAL']).astype(int)
+    df['signal'] = 0
+    df.loc[(df['MACD_cross'].diff() == 1) & (df['RSI14'] < 75), 'signal'] = 1
+    df.loc[(df['MACD_cross'].diff() == -1) | (df['RSI14'] > 85), 'signal'] = -1
+    df['signal'].fillna(0, inplace=True)
+    return df
+
+def simple_backtest(df, signal_col='signal'):
+    trades = []
+    position = None
+    if df.empty:
+        return trades, {'total_return':0,'avg_return':0,'win_rate':0,'n_trades':0}
+    for i in range(len(df)-1):
+        s = df.iloc[i][signal_col]
+        next_open = float(df.iloc[i+1]['Open'])
+        date = df.index[i+1]
+        if s == 1 and position is None:
+            position = {'entry_price': next_open, 'entry_time': date}
+        elif s == -1 and position is not None:
+            entry = position
+            exit_price = next_open
+            ret = (exit_price - entry['entry_price']) / entry['entry_price']
+            trades.append({
+                'entry_time': entry['entry_time'].isoformat(),
+                'exit_time': date.isoformat(),
+                'entry_price': float(entry['entry_price']),
+                'exit_price': float(exit_price),
+                'return': float(ret)
+            })
+            position = None
+    if position is not None:
+        last_price = float(df.iloc[-1]['Close'])
+        ret = (last_price - position['entry_price']) / position['entry_price']
+        trades.append({
+            'entry_time': position['entry_time'].isoformat(),
+            'exit_time': df.index[-1].isoformat(),
+            'entry_price': float(position['entry_price']),
+            'exit_price': float(last_price),
+            'return': float(ret)
+        })
+    total_return = np.prod([1 + t['return'] for t in trades]) - 1 if trades else 0.0
+    avg_ret = np.mean([t['return'] for t in trades]) if trades else 0.0
+    win_rate = np.mean([1 if t['return']>0 else 0 for t in trades]) if trades else 0.0
+    return trades, {'total_return':float(total_return),'avg_return':float(avg_ret),'win_rate':float(win_rate),'n_trades':len(trades)}
+
+# ---------- hybrid scoring ----------
+def hybrid_signal_score(df, headlines: List[str]):
+    if df.empty:
+        return 0.0, "No data"
+    last = df.iloc[-1]
+    score = 0.0
+    if last['EMA12'] > last['EMA26']: score += 0.5
+    else: score -= 0.5
+    if last['MACD'] > last['MACD_SIGNAL']: score += 0.3
+    else: score -= 0.3
+    if last['RSI14'] < 30: score += 0.2
+    if last['RSI14'] > 70: score -= 0.2
+    # news
+    s = 0
+    for h in headlines:
+        s += headline_sentiment(h)
+    news_score = max(-5, min(5, s)) / 5.0 if headlines else 0.0
+    final = 0.7 * score + 0.3 * news_score
+    reason = f"tech={score:.2f},news={news_score:.2f}"
+    return final, reason
+
+# ---------- endpoints ----------
+@app.get("/analyze")
+async def analyze(symbol: str = Query("BTCUSDT"), interval: str = Query("1h"), limit: int = Query(500), source: str = Query("binance")):
+    try:
+        # fetch
+        df = fetch_ohlc(symbol, interval, limit, source)
+        if df is None or df.empty:
+            raise ValueError("No data returned")
+        # indicators & signals
+        df2 = generate_signals(df)
+        if df2.empty:
+            return JSONResponse({
+                "chart": [], "indicators": [], "trades": [], "metrics": {'total_return':0,'avg_return':0,'win_rate':0,'n_trades':0},
+                "interpretation":["Not enough rows after indicator cleaning"], "headlines": [], "forexfactory": []
+            }, status_code=200)
+        trades, metrics = simple_backtest(df2)
+        headlines = fetch_news_for_symbol(symbol, limit=10)
+        ff = fetch_forexfactory(limit=10)
+        hybrid_score, hybrid_reason = hybrid_signal_score(df2, headlines)
+        tail = df2[['Open','High','Low','Close']].tail(500).reset_index()
+        tail_cols = tail.rename(columns={"index":"datetime"}).to_dict(orient='records')
+        indicators = df2[['EMA12','EMA26','RSI14','MACD','MACD_SIGNAL','BB_UP','BB_LOW']].tail(500).reset_index().to_dict(orient='records')
+        return {
+            "chart": tail_cols,
+            "indicators": indicators,
+            "trades": trades,
+            "metrics": metrics,
+            "interpretation":[f"Hybrid score: {hybrid_score:.3f} ({hybrid_reason})"],
+            "headlines": headlines,
+            "forexfactory": ff
         }
-    }catch(e){
-        console.error(e);
-        alert('خطا در بارگذاری: '+e);
-    }
-}
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
 
-initChart();
-document.getElementById('btn').addEventListener('click', loadData);
-</script>
-</body>
-</html>
+@app.get("/health")
+def health():
+    return {"status":"ok"}
+
+# static
+app.mount("/", StaticFiles(directory="static", html=True), name="static")
