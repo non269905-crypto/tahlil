@@ -1,49 +1,60 @@
 body{
-    font-family:tahoma, sans-serif;
+    font-family:tahoma,sans-serif;
     background:#071221;
     color:#e6eef8;
     padding:12px;
     direction:rtl;
 }
+
 .container{
     max-width:1200px;
     margin:auto;
 }
+
 .controls{
     display:flex;
-    gap:8px;
-    align-items:center;
+    gap:12px;
     flex-wrap:wrap;
     margin-bottom:12px;
 }
-.select, input, button{
+
+select, input{
     padding:8px;
-    border-radius:6px;
     background:#0b1a2a;
-    border:1px solid #173147;
+    border:1px solid #193040;
+    border-radius:6px;
     color:#e6eef8;
+    min-width:140px;
 }
+
+#symbol{
+    width:200px;
+}
+
+.btn{
+    background:#1f8cff;
+    border:none;
+    padding:10px 14px;
+    border-radius:6px;
+    color:white;
+    cursor:pointer;
+}
+
 #chart{
-    height:520px;
+    height:540px;
     background:#071221;
     border-radius:6px;
     padding:6px;
 }
+
 .panel{
     margin-top:12px;
     background:#081826;
     padding:12px;
     border-radius:6px;
 }
+
 .small{
+    font-size:0.9rem;
     color:#9fb0c8;
-    font-size:0.85rem;
-}
-.btn{
-    background:#1f8cff;
-    border:none;
-    padding:8px 12px;
-    border-radius:6px;
-    color:#fff;
-    cursor:pointer;
 }
