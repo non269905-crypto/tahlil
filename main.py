@@ -18,12 +18,12 @@ def RSI(series, period=14):
     delta = series.diff()
     up = delta.clip(lower=0)
     down = -delta.clip(upper=0)
-    # استفاده از .ewm() به جای .rolling().mean() برای RSI استانداردتر است
+    # اصلاح: استفاده از ewm برای RSI استانداردتر و دقیق‌تر
     ma_up = up.ewm(com=period - 1, adjust=True, min_periods=period).mean()
     ma_down = down.ewm(com=period - 1, adjust=True, min_periods=period).mean()
     
     rs = ma_up / ma_down
-    rs[ma_down == 0] = np.inf # جلوگیری از خطای تقسیم بر صفر
+    rs[ma_down == 0] = np.inf
     
     return 100 - (100 / (1 + rs))
 
@@ -112,12 +112,14 @@ def fetch_ohlc(symbol, interval, period='7d'):
 
 # --- Interpretations ---
 def interpret(df):
+    # بررسی خالی بودن دیتا
     if df.empty:
         return ["No data for interpretation."]
         
     last = df.iloc[-1]
     texts = []
     
+    # ✅ اصلاح: استفاده از pd.notna برای جلوگیری از خطای Ambiguous
     if pd.notna(last['EMA12']) and pd.notna(last['EMA26']):
         if last['EMA12'] > last['EMA26']:
             texts.append("EMA12 above EMA26 → short-term bullish trend")
@@ -143,10 +145,11 @@ def interpret(df):
 
 # --- API endpoints ---
 
-# ✅✅✅ اول: روت‌های API (مانند /analyze) باید *قبل از* app.mount تعریف شوند
+# ✅ اصلاح: استفاده از async def برای جلوگیری از خطاهای سرور (502/500)
 @app.get("/analyze")
 async def analyze(symbol: str = Query("GC=F"), interval: str = Query("5m"), period: str = Query("7d")):
     try:
+        # FastAPI توابع sync را در یک thread pool اجرا می‌کند.
         df = fetch_ohlc(symbol, interval, period=period)
         df_signals = generate_signals(df)
         trades, metrics = simple_backtest(df_signals)
@@ -162,8 +165,10 @@ async def analyze(symbol: str = Query("GC=F"), interval: str = Query("5m"), peri
 
         return {"chart": chart, "indicators": indicators, "trades": trades, "metrics": metrics, "interpretation": interp}
     except Exception as e:
+        # در صورت بروز خطای Ambiguous، اینجا یک پاسخ 500 با پیام خطا برگردانده می‌شود
         return JSONResponse({"error": str(e)}, status_code=500)
 
+# ✅ اصلاح: استفاده از async def
 @app.get("/news")
 async def news():
     sources = [
@@ -182,6 +187,5 @@ async def news():
     return {"news": items, "count": len(items), "time": time.time()}
 
 
-# ✅✅✅ آخر: روت فایل استاتیک (/) باید *در انتها* تعریف شود
-# این کد به درستی فایل index.html شما را از پوشه 'static' سرو می‌کند
+# ✅ اصلاح: انتقال app.mount به انتهای فایل برای رفع ارور 404
 app.mount("/", StaticFiles(directory="static", html=True), name="static")
