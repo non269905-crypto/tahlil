@@ -18,7 +18,7 @@ def RSI(series, period=14):
     delta = series.diff()
     up = delta.clip(lower=0)
     down = -delta.clip(upper=0)
-    # اصلاح: استفاده از ewm برای RSI استانداردتر و دقیق‌تر
+    # اصلاح: استفاده از ewm برای RSI استانداردتر
     ma_up = up.ewm(com=period - 1, adjust=True, min_periods=period).mean()
     ma_down = down.ewm(com=period - 1, adjust=True, min_periods=period).mean()
     
@@ -112,14 +112,13 @@ def fetch_ohlc(symbol, interval, period='7d'):
 
 # --- Interpretations ---
 def interpret(df):
-    # بررسی خالی بودن دیتا
     if df.empty:
         return ["No data for interpretation."]
         
     last = df.iloc[-1]
     texts = []
     
-    # ✅ اصلاح: استفاده از pd.notna برای جلوگیری از خطای Ambiguous
+    # ✅ اصلاح برای رفع خطای Ambiguous: استفاده از pd.notna() قبل از مقایسه
     if pd.notna(last['EMA12']) and pd.notna(last['EMA26']):
         if last['EMA12'] > last['EMA26']:
             texts.append("EMA12 above EMA26 → short-term bullish trend")
@@ -145,11 +144,10 @@ def interpret(df):
 
 # --- API endpoints ---
 
-# ✅ اصلاح: استفاده از async def برای جلوگیری از خطاهای سرور (502/500)
+# ✅ اصلاح: استفاده از async def
 @app.get("/analyze")
 async def analyze(symbol: str = Query("GC=F"), interval: str = Query("5m"), period: str = Query("7d")):
     try:
-        # FastAPI توابع sync را در یک thread pool اجرا می‌کند.
         df = fetch_ohlc(symbol, interval, period=period)
         df_signals = generate_signals(df)
         trades, metrics = simple_backtest(df_signals)
