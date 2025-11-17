@@ -1,43 +1,37 @@
+<!-- static/index.html -->
 <!doctype html>
 <html lang="fa">
 <head>
 <meta charset="utf-8"/>
-<title>داشبورد معاملات پیشرفته</title>
-<script src="https://cdn.plot.ly/plotly-2.30.0.min.js"></script>
+<title>Hybrid Trading Dashboard</title>
+<script src="https://unpkg.com/lightweight-charts@3.9.0/dist/lightweight-charts.standalone.production.js"></script>
 <style>
-body{font-family:Tahoma, sans-serif;background:#0f1720;color:#e6eef8;padding:16px;direction:rtl;}
-.container{max-width:1100px;margin:auto;}
-.controls{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:12px;}
-.select{padding:6px;border-radius:6px;background:#071122;color:#e6eef8;border:1px solid #1f2a36;}
-.btn{background:#1f6feb;color:white;padding:8px 12px;border-radius:6px;border:none;cursor:pointer;}
-#chart{width:100%;height:520px;background:#081221;border-radius:6px;padding:6px;}
-.news{background:#081221;padding:10px;border-radius:6px;margin-top:12px;max-height:220px;overflow:auto;}
-.panel{margin-top:10px;background:#081221;padding:10px;border-radius:6px;}
+body{font-family:tahoma, sans-serif;background:#071221;color:#e6eef8;padding:12px;direction:rtl;}
+.container{max-width:1200px;margin:auto;}
+.controls{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:12px;}
+.select, input, button{padding:8px;border-radius:6px;background:#0b1a2a;border:1px solid #173147;color:#e6eef8;}
+#chart{height:520px;background:#071221;border-radius:6px;padding:6px;}
+.panel{margin-top:12px;background:#081826;padding:10px;border-radius:6px;}
 .small{font-size:0.9rem;color:#9fb0c8;}
+.badge{background:#14445b;padding:4px 8px;border-radius:6px;color:#e6eef8}
+.btn{background:#1f8cff;border:none;padding:8px 12px;border-radius:6px;color:#fff;cursor:pointer}
 </style>
 </head>
 <body>
 <div class="container">
-<h2>داشبورد تحلیل معاملات — نسخه پیشرفته</h2>
+<h2>داشبورد هیبریدی تحلیل — تکنیکال + اخبار</h2>
 <div class="controls">
 <label>نماد:
-<select id="symbol" class="select">
-<option value="GC=F">Gold (GC=F)</option>
-<option value="EURUSD=X">EUR/USD</option>
-<option value="BTC-USD">BTC/USD</option>
-</select>
+<input id="symbol" class="select" value="AAPL" />
 </label>
-
-<label>تایم‌فریم:
+<label>منبع:
+<select id="source" class="select"><option value="twelve">TwelveData</option><option value="yahoo">YahooQuery</option></select>
+</label>
+<label>تایمفریم:
 <select id="interval" class="select">
-<option value="1m">1m</option>
-<option value="5m" selected>5m</option>
-<option value="15m">15m</option>
-<option value="1h">1h</option>
-<option value="1d">1d</option>
+<option>1min</option><option>5min</option><option>15min</option><option>30min</option><option selected>1h</option><option>1day</option>
 </select>
 </label>
-
 <button id="btn" class="btn">بارگذاری</button>
 </div>
 
@@ -48,53 +42,92 @@ body{font-family:Tahoma, sans-serif;background:#0f1720;color:#e6eef8;padding:16p
 <strong>متریک‌ها:</strong> <pre id="metrics" class="small"></pre>
 </div>
 
-<h3>تفسیر خودکار</h3>
-<div class="panel" id="interpret"></div>
+<div class="panel">
+<h4>تحلیل ترکیبی (تکنیکال + اخبار)</h4>
+<div id="interpret"></div>
+</div>
 
-<h3>اخبار</h3>
-<div class="news" id="news">برای دریافت اخبار دکمه بارگذاری را بزنید</div>
+<div class="panel">
+<h4>اخبار مرتبط</h4>
+<pre id="news" class="small">—</pre>
+</div>
 </div>
 
 <script>
-const API_BASE = "https://tahlil-production.up.railway.app"; // لینک دپلوی شده روی Railway
+const API_BASE = "";
+
+let chart, candleSeries, ema12Series, ema26Series, markers = [];
+
+function initChart(){
+    const container = document.getElementById('chart');
+    chart = LightweightCharts.createChart(container, {
+        width: container.clientWidth,
+        height: 520,
+        layout: { background: { color: '#071221' }, textColor: '#e6eef8' },
+        grid: { vertLines: { color: '#0b2230' }, horzLines: { color: '#0b2230' } },
+        rightPriceScale: { borderColor: '#0b2230' },
+        timeScale: { borderColor: '#0b2230' }
+    });
+    candleSeries = chart.addCandlestickSeries();
+    ema12Series = chart.addLineSeries({lineWidth:1,priceLineVisible:false});
+    ema26Series = chart.addLineSeries({lineWidth:1,priceLineVisible:false});
+    window.addEventListener('resize', ()=> chart.applyOptions({width:container.clientWidth}));
+}
+
+function mapToChartData(arr){
+    return arr.map(r=>{
+        // TwelveData returns datetime as string, yahooquery may vary
+        const t = r.datetime || r.index || r.date || r.chart_time;
+        const time = (new Date(t)).toISOString();
+        return { time: time, open: parseFloat(r.Open), high: parseFloat(r.High), low: parseFloat(r.Low), close: parseFloat(r.Close) };
+    });
+}
 
 async function loadData(){
     const symbol = document.getElementById('symbol').value;
     const interval = document.getElementById('interval').value;
+    const source = document.getElementById('source').value;
     document.getElementById('summary').innerText = 'در حال بارگذاری...';
-
-    try {
-        const res = await fetch(`${API_BASE}/analyze?symbol=${encodeURIComponent(symbol)}&interval=${interval}&period=7d`);
+    try{
+        const res = await fetch(`/analyze?symbol=${encodeURIComponent(symbol)}&interval=${interval}&source=${source}&period=500`);
         const j = await res.json();
-        if(j.error){
-            alert('Error: '+j.error);
-            return;
-        }
-        const chart = j.chart;
-        const ind = j.indicators;
-        const x = chart.map((r,i)=>i);
-        const cand = { x, open: chart.map(r=>r.Open), high: chart.map(r=>r.High), low: chart.map(r=>r.Low), close: chart.map(r=>r.Close), type:'candlestick', name:'Price' };
-        const ema12 = { x, y: ind.map(r=>r.EMA12), type:'scatter', name:'EMA12' };
-        const ema26 = { x, y: ind.map(r=>r.EMA26), type:'scatter', name:'EMA26' };
-        const bbup = { x, y: ind.map(r=>r.BB_UP), type:'scatter', name:'BB_UP', line:{dash:'dash'} };
-        const bblow = { x, y: ind.map(r=>r.BB_LOW), type:'scatter', name:'BB_LOW', line:{dash:'dash'} };
-        const data = [cand, ema12, ema26, bbup, bblow];
-        Plotly.newPlot('chart', data, {margin:{t:20}, paper_bgcolor:'#0b1220', plot_bgcolor:'#0b1220', font:{color:'#e6eef8'}});
+        if(j.error){ alert('Error: '+j.error); document.getElementById('summary').innerText='خطا'; return; }
+        if(!j.chart || !j.chart.length){ alert('No data'); document.getElementById('summary').innerText='داده‌ای نیست'; return; }
+        // prepare chart
+        const cdata = j.chart.map(r=>{
+            return { time: (new Date(r.datetime || r.index)).toISOString(), open: r.Open, high: r.High, low: r.Low, close: r.Close };
+        });
+        candleSeries.setData(cdata);
+        // indicators (indicators parallel aligned by index)
+        const inds = j.indicators;
+        const ema12 = inds.map((it, idx)=>({ time: cdata[idx].time, value: it['EMA12'] })).filter(x=>x.value!=null);
+        const ema26 = inds.map((it, idx)=>({ time: cdata[idx].time, value: it['EMA26'] })).filter(x=>x.value!=null);
+        ema12Series.setData(ema12);
+        ema26Series.setData(ema26);
 
-        const trades = j.trades;
-        document.getElementById('summary').innerText = trades.length ? trades.map(t=>`Entry:${t.entry_price.toFixed(2)} Exit:${t.exit_price.toFixed(2)} Ret:${(t.return*100).toFixed(2)}%`).join(' | ') : 'هیچ معامله‌ای ثبت نشده';
-        document.getElementById('metrics').innerText = JSON.stringify(j.metrics,null,2);
-        document.getElementById('interpret').innerHTML = j.interpretation.map(t=>'<div>- '+t+'</div>').join('');
+        // trades markers
+        markers = [];
+        (j.trades||[]).forEach(t=>{
+            const entryTime = new Date(t.entry_time).toISOString();
+            const exitTime = new Date(t.exit_time).toISOString();
+            markers.push({ time: entryTime, position: 'belowBar', color: t.return>0 ? 'green' : 'red', shape:'arrowUp', text: 'Entry' });
+            markers.push({ time: exitTime, position: 'aboveBar', color: t.return>0 ? 'green' : 'red', shape:'arrowDown', text: 'Exit' });
+        });
+        candleSeries.setMarkers(markers);
 
-        const newsRes = await fetch(`${API_BASE}/news`);
-        const news = await newsRes.json();
-        document.getElementById('news').innerText = news.count ? news.news.join('\n\n---\n\n') : 'خبر یافت نشد';
-    } catch(e){
+        // metrics & summary
+        document.getElementById('metrics').innerText = JSON.stringify(j.metrics, null, 2);
+        document.getElementById('summary').innerText = (j.trades && j.trades.length) ? j.trades.map(t=>`Entry:${t.entry_price.toFixed(2)} Exit:${t.exit_price.toFixed(2)} Ret:${(t.return*100).toFixed(2)}%`).join(' | ') : 'هیچ معامله‌ای';
+        // interpretation & headlines
+        document.getElementById('interpret').innerText = (j.interpretation||[]).join('\n');
+        document.getElementById('news').innerText = (j.headlines && j.headlines.length) ? j.headlines.join('\n\n---\n\n') : 'خبری نیست';
+    }catch(e){
         console.error(e);
-        alert('خطا در بارگذاری داده‌ها. لطفا بعدا امتحان کنید.');
+        alert('خطا در بارگذاری: '+e);
     }
 }
 
+initChart();
 document.getElementById('btn').addEventListener('click', loadData);
 </script>
 </body>
