@@ -1,8 +1,8 @@
-﻿fastapi
+fastapi
 uvicorn[standard]
+requests
 pandas
 numpy
-requests
-yfinance==0.2.54
-
-
+yahooquery
+feedparser
+python-multipart
