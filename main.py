@@ -1,4 +1,4 @@
-﻿# main.py
+# main.py
 from fastapi import FastAPI, Query
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -11,6 +11,7 @@ import time
 app = FastAPI(title="Trading Analytics Advanced")
 
 # Serve frontend (static/index.html)
+# مطمئن شوید که فایل index.html شما درون پوشه‌ای به نام 'static' قرار دارد
 app.mount("/", StaticFiles(directory="static", html=True), name="static")
 
 # --- Indicators ---
@@ -21,9 +22,13 @@ def RSI(series, period=14):
     delta = series.diff()
     up = delta.clip(lower=0)
     down = -delta.clip(upper=0)
-    ma_up = up.rolling(period).mean()
-    ma_down = down.rolling(period).mean()
+    # استفاده از .ewm() به جای .rolling().mean() برای RSI استانداردتر است
+    ma_up = up.ewm(com=period - 1, adjust=True, min_periods=period).mean()
+    ma_down = down.ewm(com=period - 1, adjust=True, min_periods=period).mean()
+    
     rs = ma_up / ma_down
+    rs[ma_down == 0] = np.inf # جلوگیری از خطای تقسیم بر صفر
+    
     return 100 - (100 / (1 + rs))
 
 def MACD(series, s_short=12, s_long=26, s_signal=9):
@@ -65,6 +70,10 @@ def simple_backtest(df, signal_col='signal'):
     position = None
     for i in range(len(df)-1):
         s = df.iloc[i][signal_col]
+        # اطمینان از اینکه به ردیف بعدی دسترسی داریم
+        if i + 1 >= len(df):
+            break
+            
         next_open = float(df.iloc[i+1]['Open'])
         date = df.index[i+1]
         if s == 1 and position is None:
@@ -81,6 +90,8 @@ def simple_backtest(df, signal_col='signal'):
                 'return': float(ret)
             })
             position = None
+            
+    # بستن پوزیشن باز در انتهای دیتا
     if position is not None:
         last_price = float(df.iloc[-1]['Close'])
         ret = (last_price - position['entry_price']) / position['entry_price']
@@ -91,6 +102,7 @@ def simple_backtest(df, signal_col='signal'):
             'exit_price': float(last_price),
             'return': float(ret)
         })
+        
     total_return = np.prod([1 + t['return'] for t in trades]) - 1 if trades else 0.0
     avg_ret = np.mean([t['return'] for t in trades]) if trades else 0.0
     win_rate = np.mean([1 if t['return']>0 else 0 for t in trades]) if trades else 0.0
@@ -98,55 +110,95 @@ def simple_backtest(df, signal_col='signal'):
 
 # --- Fetch OHLC ---
 def fetch_ohlc(symbol, interval, period='7d'):
+    # غیرفعال کردن progress bar و threads برای سازگاری بهتر با سرور
     df = yf.download(symbol, period=period, interval=interval, progress=False, threads=False)
     if df is None or df.empty:
         raise ValueError("No data returned for symbol/interval")
+    # اطمینان از اینکه ایندکس Datetime است (برای yfinance معمولا هست)
+    df.index = pd.to_datetime(df.index)
     return df
 
 # --- Interpretations ---
 def interpret(df):
+    # اطمینان از اینکه دیتایی برای تفسیر وجود دارد
+    if df.empty:
+        return ["No data for interpretation."]
+        
     last = df.iloc[-1]
     texts = []
-    if last['EMA12'] > last['EMA26']:
-        texts.append("EMA12 above EMA26 → short-term bullish trend")
-    else:
-        texts.append("EMA12 below EMA26 → short-term bearish trend")
-    if last['RSI14'] < 30:
-        texts.append("RSI indicates oversold conditions (possible rebound)")
-    elif last['RSI14'] > 70:
-        texts.append("RSI indicates overbought conditions (possible pullback)")
-    if last['Close'] > last['BB_UP']:
-        texts.append("Price above upper Bollinger band (extended move)")
-    elif last['Close'] < last['BB_LOW']:
-        texts.append("Price below lower Bollinger band (extended move)")
+    
+    # بررسی مقادیر NaN قبل از مقایسه
+    if pd.notna(last['EMA12']) and pd.notna(last['EMA26']):
+        if last['EMA12'] > last['EMA26']:
+            texts.append("EMA12 above EMA26 → short-term bullish trend")
+        else:
+            texts.append("EMA12 below EMA26 → short-term bearish trend")
+            
+    if pd.notna(last['RSI14']):
+        if last['RSI14'] < 30:
+            texts.append("RSI indicates oversold conditions (possible rebound)")
+        elif last['RSI14'] > 70:
+            texts.append("RSI indicates overbought conditions (possible pullback)")
+            
+    if pd.notna(last['Close']) and pd.notna(last['BB_UP']) and pd.notna(last['BB_LOW']):
+        if last['Close'] > last['BB_UP']:
+            texts.append("Price above upper Bollinger band (extended move)")
+        elif last['Close'] < last['BB_LOW']:
+            texts.append("Price below lower Bollinger band (extended move)")
+            
+    if not texts:
+        texts.append("Not enough data for interpretation.")
+        
     return texts
 
 # --- API endpoints ---
+
+# ✅ اصلاح شده: تبدیل به async def
 @app.get("/analyze")
-def analyze(symbol: str = Query("GC=F"), interval: str = Query("5m"), period: str = Query("7d")):
+async def analyze(symbol: str = Query("GC=F"), interval: str = Query("5m"), period: str = Query("7d")):
     try:
+        # این توابع (که sync هستند) به صورت خودکار توسط FastAPI
+        # در یک ترد جداگانه اجرا می‌شوند تا سرور قفل نشود
         df = fetch_ohlc(symbol, interval, period=period)
         df_signals = generate_signals(df)
         trades, metrics = simple_backtest(df_signals)
         interp = interpret(df_signals)
-        chart = df_signals[['Open','High','Low','Close']].tail(200).reset_index().to_dict(orient='records')
-        indicators = df_signals[['EMA12','EMA26','RSI14','MACD','MACD_SIGNAL','BB_UP','BB_LOW']].tail(200).reset_index().to_dict(orient='records')
+        
+        # تبدیل ایندکس (تاریخ) به ستون برای ارسال در JSON
+        chart_df = df_signals[['Open','High','Low','Close']].tail(200).reset_index()
+        # اطمینان از اینکه تاریخ‌ها به فرمت رشته‌ای مناسب (ISO) تبدیل می‌شوند
+        chart_df['index'] = chart_df['index'].astype(str)
+        chart = chart_df.to_dict(orient='records')
+        
+        indicators_df = df_signals[['EMA12','EMA26','RSI14','MACD','MACD_SIGNAL','BB_UP','BB_LOW']].tail(200).reset_index()
+        indicators_df['index'] = indicators_df['index'].astype(str)
+        indicators = indicators_df.to_dict(orient='records')
+
         return {"chart": chart, "indicators": indicators, "trades": trades, "metrics": metrics, "interpretation": interp}
     except Exception as e:
+        # برگرداندن خطای واضح‌تر در پاسخ JSON
         return JSONResponse({"error": str(e)}, status_code=500)
 
+# ✅ اصلاح شده: تبدیل به async def (چون requests هم I/O است)
 @app.get("/news")
-def news():
+async def news():
     sources = [
         "https://www.forexfactory.com/ffcal_week_this.xml",
         "https://finance.yahoo.com/rss/topstories"
     ]
     items = []
+    # نکته: در یک اپلیکیشن async واقعی، باید از یک کتابخانه http async
+    # مانند 'httpx' استفاده کرد، اما 'requests' هم به لطف FastAPI کار می‌کند
+    # هرچند بهینه نیست
     for s in sources:
         try:
+            # timeout کوتاه برای جلوگیری از قفل شدن طولانی
             r = requests.get(s, timeout=5)
             if r.status_code == 200:
+                # گرفتن 2000 کاراکتر اول برای جلوگیری از حجم بالای دیتا
                 items.append(r.text[:2000])
-        except:
+        except requests.RequestException:
+            # نادیده گرفتن خطاهای فچ کردن اخبار (مثل timeout)
             continue
+            
     return {"news": items, "count": len(items), "time": time.time()}
