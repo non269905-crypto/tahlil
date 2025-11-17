@@ -1,4 +1,4 @@
-# main.py - نسخه نهایی و مقاوم در برابر کرش (500)
+# main.py
 from fastapi import FastAPI, Query
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -20,8 +20,10 @@ def RSI(series, period=14):
     down = -delta.clip(upper=0)
     ma_up = up.ewm(com=period - 1, adjust=True, min_periods=period).mean()
     ma_down = down.ewm(com=period - 1, adjust=True, min_periods=period).mean()
+    
     rs = ma_up / ma_down
     rs[ma_down == 0] = np.inf
+    
     return 100 - (100 / (1 + rs))
 
 def MACD(series, s_short=12, s_long=26, s_signal=9):
@@ -39,31 +41,26 @@ def bollinger(series, window=20, stds=2):
     lower = ma - stds * std
     return upper, ma, lower
 
-# main.py (فقط این تابع را جایگزین کنید)
-
-# main.py (فقط این تابع را جایگزین کنید)
-
 # --- Signals and simple backtest ---
+# ✅ اصلاح شده برای رفع خطای Ambiguous و Column Missing
 def generate_signals(df):
     df = df.copy()
     if df.empty: 
         return df
         
-    # 1. محاسبه اندیکاتورها
+    # 1. محاسبه اندیکاتورها (اینجا NaNها اضافه می‌شوند)
     df['EMA12'] = EMA(df['Close'], 12)
     df['EMA26'] = EMA(df['Close'], 26)
     df['RSI14'] = RSI(df['Close'], 14)
     df['MACD'], df['MACD_SIGNAL'], df['MACD_HIST'] = MACD(df['Close'])
     df['BB_UP'], df['BB_MID'], df['BB_LOW'] = bollinger(df['Close'])
 
-    # ✅ اصلاح حیاتی برای رفع خطای Ambiguous و ستون‌های گمشده:
-    # حذف ردیف‌هایی که اندیکاتورهای اصلی در آن‌ها NaN است.
-    # این کار باید پس از محاسبه اندیکاتورها انجام شود.
+    # 2. حذف ردیف‌هایی که اندیکاتورهای اصلی در آن‌ها NaN است
     required_cols = ['EMA26', 'RSI14', 'MACD_SIGNAL']
     
-    # 2. بررسی وجود ستون‌ها قبل از dropna (برای اطمینان بیشتر)
+    # اطمینان از اینکه ستون‌ها ایجاد شده‌اند (باید باشند)
     if not all(col in df.columns for col in required_cols):
-        # اگر به هر دلیلی ستون‌ها ایجاد نشده‌اند، اینجا کرش می‌کنیم
+        # اگر خطا همچنان تکرار شود، این خطا پیام دقیق‌تری خواهد داد
         raise ValueError(f"Required indicator columns are missing: {required_cols}")
 
     df.dropna(subset=required_cols, inplace=True)
@@ -83,36 +80,11 @@ def generate_signals(df):
     df['signal'].fillna(0, inplace=True) 
     return df
 
-    # 2. تولید سیگنال بر روی دیتای تمیز
-    # MACD crossover signal and RSI filter
-    df['MACD_cross'] = (df['MACD'] > df['MACD_SIGNAL']).astype(int)
-    df['signal'] = 0
-    # buy: MACD crosses above AND RSI not extreme
-    df.loc[(df['MACD_cross'].diff() == 1) & (df['RSI14'] < 75), 'signal'] = 1
-    # sell: MACD crosses below OR RSI extremely high
-    df.loc[(df['MACD_cross'].diff() == -1) | (df['RSI14'] > 85), 'signal'] = -1
-    
-    df['signal'].fillna(0, inplace=True) # برای اطمینان بیشتر
-    return df
-
-    # MACD crossover signal and RSI filter
-    df['MACD_cross'] = (df['MACD'] > df['MACD_SIGNAL']).astype(int)
-    df['signal'] = 0
-    # buy: MACD crosses above AND RSI not extreme
-    df.loc[(df['MACD_cross'].diff() == 1) & (df['RSI14'] < 75), 'signal'] = 1
-    # sell: MACD crosses below OR RSI extremely high
-    df.loc[(df['MACD_cross'].diff() == -1) | (df['RSI14'] > 85), 'signal'] = -1
-
-    return df
-
 def simple_backtest(df, signal_col='signal'):
     trades = []
     position = None
-    if df.empty: return trades, {'total_return': 0.0, 'avg_return': 0.0, 'win_rate': 0.0, 'n_trades': 0}
-    
-    # ... (بقیه منطق backtest بدون تغییر)
-    # ...
-    # (کد backtest در پاسخ قبلی شما درست بود و نیازی به تغییر ندارد)
+    if df.empty: 
+        return trades, {'total_return': 0.0, 'avg_return': 0.0, 'win_rate': 0.0, 'n_trades': 0}
 
     for i in range(len(df)-1):
         s = df.iloc[i][signal_col]
@@ -152,7 +124,6 @@ def simple_backtest(df, signal_col='signal'):
     win_rate = np.mean([1 if t['return']>0 else 0 for t in trades]) if trades else 0.0
     return trades, {'total_return': float(total_return), 'avg_return': float(avg_ret), 'win_rate': float(win_rate), 'n_trades': len(trades)}
 
-
 # --- Fetch OHLC ---
 def fetch_ohlc(symbol, interval, period='7d'):
     df = yf.download(symbol, period=period, interval=interval, progress=False, threads=False)
@@ -162,6 +133,7 @@ def fetch_ohlc(symbol, interval, period='7d'):
     return df
 
 # --- Interpretations ---
+# ✅ اصلاح شده برای رفع خطای Ambiguous
 def interpret(df):
     if df.empty:
         return ["No data for interpretation."]
@@ -169,7 +141,6 @@ def interpret(df):
     last = df.iloc[-1]
     texts = []
     
-    # ✅ این بخش حیاتی است و باید pd.notna را داشته باشد
     if pd.notna(last['EMA12']) and pd.notna(last['EMA26']):
         if last['EMA12'] > last['EMA26']:
             texts.append("EMA12 above EMA26 → short-term bullish trend")
@@ -208,7 +179,6 @@ async def analyze(symbol: str = Query("GC=F"), interval: str = Query("5m"), peri
         trades, metrics = simple_backtest(df_signals)
         interp = interpret(df_signals)
         
-        # تبدیل دیتافریم به JSON (همراه با چک خالی بودن)
         chart_df = df_signals[['Open','High','Low','Close']].tail(200).reset_index()
         chart_df['index'] = chart_df['index'].astype(str)
         chart = chart_df.to_dict(orient='records')
@@ -219,6 +189,7 @@ async def analyze(symbol: str = Query("GC=F"), interval: str = Query("5m"), peri
 
         return {"chart": chart, "indicators": indicators, "trades": trades, "metrics": metrics, "interpretation": interp}
     except Exception as e:
+        # در صورت بروز خطای Ambiguous، اینجا یک پاسخ 500 با پیام خطا برگردانده می‌شود
         return JSONResponse({"error": str(e)}, status_code=500)
 
 @app.get("/news")
@@ -239,7 +210,5 @@ async def news():
     return {"news": items, "count": len(items), "time": time.time()}
 
 
-# ✅ انتقال app.mount به انتهای فایل (برای رفع 404)
+# ✅ انتقال app.mount به انتهای فایل برای رفع ارور 404
 app.mount("/", StaticFiles(directory="static", html=True), name="static")
-
-
