@@ -4,19 +4,16 @@
 <meta charset="utf-8"/>
 <title>Hybrid Trading Dashboard</title>
 
-<!-- ⛔ نسخه اشتباه نگذارید → ONLY THIS WORKS -->
 <script src="https://cdn.jsdelivr.net/npm/lightweight-charts@4.2.1/dist/lightweight-charts.standalone.production.js"></script>
-
-<link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="/static/style.css">
 </head>
-
 <body>
 <div class="container">
     <h2>داشبورد ترکیبی — Binance / TwelveData / Yahoo + ForexFactory</h2>
 
     <div class="controls">
         <label>نماد:
-            <input id="symbol" class="select" value="BTCUSDT" />
+            <select id="symbol" class="select"></select>
         </label>
 
         <label>منبع:
@@ -29,13 +26,7 @@
 
         <label>تایم‌فریم:
             <select id="interval" class="select">
-                <option>1min</option>
-                <option>5min</option>
-                <option>15min</option>
-                <option>30min</option>
-                <option selected>1h</option>
-                <option>4h</option>
-                <option>1day</option>
+                <option>1min</option><option>5min</option><option>15min</option><option>30min</option><option selected>1h</option><option>4h</option><option>1day</option>
             </select>
         </label>
 
@@ -45,8 +36,7 @@
     <div id="chart"></div>
 
     <div class="panel">
-        <strong>خلاصه معاملات:</strong> <span id="summary">-</span><br>
-        <strong>متریک‌ها:</strong>
+        <strong>خلاصه معاملات:</strong> <span id="summary">-</span>
         <pre id="metrics" class="small"></pre>
     </div>
 
@@ -56,16 +46,18 @@
     </div>
 
     <div class="panel">
-        <h4>اخبار (Yahoo + ForexFactory)</h4>
+        <h4>اخبار (اصلی)</h4>
         <pre id="news" class="small">—</pre>
+        <h5>ترجمه فارسی</h5>
+        <pre id="news_fa" class="small">—</pre>
     </div>
 
     <div class="panel">
-        <h4>تقویم اقتصادی (ForexFactory)</h4>
+        <h4>تقویم اقتصادی</h4>
         <pre id="ff" class="small">—</pre>
     </div>
 </div>
 
-<script src="app.js"></script>
+<script src="/static/app.js"></script>
 </body>
 </html>
