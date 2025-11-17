@@ -1,134 +1,70 @@
-<!-- static/index.html -->
 <!doctype html>
 <html lang="fa">
 <head>
 <meta charset="utf-8"/>
 <title>Hybrid Trading Dashboard</title>
-<script src="https://unpkg.com/lightweight-charts@3.9.0/dist/lightweight-charts.standalone.production.js"></script>
-<style>
-body{font-family:tahoma, sans-serif;background:#071221;color:#e6eef8;padding:12px;direction:rtl;}
-.container{max-width:1200px;margin:auto;}
-.controls{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:12px;}
-.select, input, button{padding:8px;border-radius:6px;background:#0b1a2a;border:1px solid #173147;color:#e6eef8;}
-#chart{height:520px;background:#071221;border-radius:6px;padding:6px;}
-.panel{margin-top:12px;background:#081826;padding:10px;border-radius:6px;}
-.small{font-size:0.9rem;color:#9fb0c8;}
-.badge{background:#14445b;padding:4px 8px;border-radius:6px;color:#e6eef8}
-.btn{background:#1f8cff;border:none;padding:8px 12px;border-radius:6px;color:#fff;cursor:pointer}
-</style>
+
+<link rel="stylesheet" href="style.css" />
+
+<script src="https://cdn.jsdelivr.net/npm/lightweight-charts/dist/lightweight-charts.standalone.production.js"></script>
+<script src="app.js" defer></script>
+
 </head>
 <body>
 <div class="container">
-<h2>داشبورد هیبریدی تحلیل — تکنیکال + اخبار</h2>
-<div class="controls">
-<label>نماد:
-<input id="symbol" class="select" value="AAPL" />
-</label>
-<label>منبع:
-<select id="source" class="select"><option value="twelve">TwelveData</option><option value="yahoo">YahooQuery</option></select>
-</label>
-<label>تایمفریم:
-<select id="interval" class="select">
-<option>1min</option><option>5min</option><option>15min</option><option>30min</option><option selected>1h</option><option>1day</option>
-</select>
-</label>
-<button id="btn" class="btn">بارگذاری</button>
+    <h2>داشبورد ترکیبی ترید — Binance / TwelveData / Yahoo + ForexFactory</h2>
+
+    <div class="controls">
+        <label>نماد:
+            <input id="symbol" class="select" placeholder="BTCUSDT" list="symbols-list"/>
+            <datalist id="symbols-list"></datalist>
+        </label>
+
+        <label>منبع:
+            <select id="source" class="select">
+                <option value="binance">Binance (کریپتو)</option>
+                <option value="twelve">TwelveData (سهام/فارکس)</option>
+                <option value="yahoo">YahooQuery</option>
+            </select>
+        </label>
+
+        <label>تایم‌فریم:
+            <select id="interval" class="select">
+                <option>1min</option>
+                <option>5min</option>
+                <option>15min</option>
+                <option>30min</option>
+                <option selected>1h</option>
+                <option>4h</option>
+                <option>1day</option>
+            </select>
+        </label>
+
+        <button id="btn" class="btn">بارگذاری</button>
+    </div>
+
+    <div id="chart"></div>
+
+    <div class="panel">
+        <strong>خلاصه معاملات:</strong>
+        <span id="summary">—</span>
+        <pre id="metrics" class="small"></pre>
+    </div>
+
+    <div class="panel">
+        <h4>تحلیل ترکیبی</h4>
+        <div id="interpret"></div>
+    </div>
+
+    <div class="panel">
+        <h4>اخبار</h4>
+        <pre id="news" class="small"></pre>
+    </div>
+
+    <div class="panel">
+        <h4>تقویم اقتصادی فارکس</h4>
+        <pre id="ff" class="small"></pre>
+    </div>
 </div>
-
-<div id="chart"></div>
-
-<div class="panel">
-<strong>خلاصه معاملات:</strong> <span id="summary">-</span><br>
-<strong>متریک‌ها:</strong> <pre id="metrics" class="small"></pre>
-</div>
-
-<div class="panel">
-<h4>تحلیل ترکیبی (تکنیکال + اخبار)</h4>
-<div id="interpret"></div>
-</div>
-
-<div class="panel">
-<h4>اخبار مرتبط</h4>
-<pre id="news" class="small">—</pre>
-</div>
-</div>
-
-<script>
-const API_BASE = "";
-
-let chart, candleSeries, ema12Series, ema26Series, markers = [];
-
-function initChart(){
-    const container = document.getElementById('chart');
-    chart = LightweightCharts.createChart(container, {
-        width: container.clientWidth,
-        height: 520,
-        layout: { background: { color: '#071221' }, textColor: '#e6eef8' },
-        grid: { vertLines: { color: '#0b2230' }, horzLines: { color: '#0b2230' } },
-        rightPriceScale: { borderColor: '#0b2230' },
-        timeScale: { borderColor: '#0b2230' }
-    });
-    candleSeries = chart.addCandlestickSeries();
-    ema12Series = chart.addLineSeries({lineWidth:1,priceLineVisible:false});
-    ema26Series = chart.addLineSeries({lineWidth:1,priceLineVisible:false});
-    window.addEventListener('resize', ()=> chart.applyOptions({width:container.clientWidth}));
-}
-
-function mapToChartData(arr){
-    return arr.map(r=>{
-        // TwelveData returns datetime as string, yahooquery may vary
-        const t = r.datetime || r.index || r.date || r.chart_time;
-        const time = (new Date(t)).toISOString();
-        return { time: time, open: parseFloat(r.Open), high: parseFloat(r.High), low: parseFloat(r.Low), close: parseFloat(r.Close) };
-    });
-}
-
-async function loadData(){
-    const symbol = document.getElementById('symbol').value;
-    const interval = document.getElementById('interval').value;
-    const source = document.getElementById('source').value;
-    document.getElementById('summary').innerText = 'در حال بارگذاری...';
-    try{
-        const res = await fetch(`/analyze?symbol=${encodeURIComponent(symbol)}&interval=${interval}&source=${source}&period=500`);
-        const j = await res.json();
-        if(j.error){ alert('Error: '+j.error); document.getElementById('summary').innerText='خطا'; return; }
-        if(!j.chart || !j.chart.length){ alert('No data'); document.getElementById('summary').innerText='داده‌ای نیست'; return; }
-        // prepare chart
-        const cdata = j.chart.map(r=>{
-            return { time: (new Date(r.datetime || r.index)).toISOString(), open: r.Open, high: r.High, low: r.Low, close: r.Close };
-        });
-        candleSeries.setData(cdata);
-        // indicators (indicators parallel aligned by index)
-        const inds = j.indicators;
-        const ema12 = inds.map((it, idx)=>({ time: cdata[idx].time, value: it['EMA12'] })).filter(x=>x.value!=null);
-        const ema26 = inds.map((it, idx)=>({ time: cdata[idx].time, value: it['EMA26'] })).filter(x=>x.value!=null);
-        ema12Series.setData(ema12);
-        ema26Series.setData(ema26);
-
-        // trades markers
-        markers = [];
-        (j.trades||[]).forEach(t=>{
-            const entryTime = new Date(t.entry_time).toISOString();
-            const exitTime = new Date(t.exit_time).toISOString();
-            markers.push({ time: entryTime, position: 'belowBar', color: t.return>0 ? 'green' : 'red', shape:'arrowUp', text: 'Entry' });
-            markers.push({ time: exitTime, position: 'aboveBar', color: t.return>0 ? 'green' : 'red', shape:'arrowDown', text: 'Exit' });
-        });
-        candleSeries.setMarkers(markers);
-
-        // metrics & summary
-        document.getElementById('metrics').innerText = JSON.stringify(j.metrics, null, 2);
-        document.getElementById('summary').innerText = (j.trades && j.trades.length) ? j.trades.map(t=>`Entry:${t.entry_price.toFixed(2)} Exit:${t.exit_price.toFixed(2)} Ret:${(t.return*100).toFixed(2)}%`).join(' | ') : 'هیچ معامله‌ای';
-        // interpretation & headlines
-        document.getElementById('interpret').innerText = (j.interpretation||[]).join('\n');
-        document.getElementById('news').innerText = (j.headlines && j.headlines.length) ? j.headlines.join('\n\n---\n\n') : 'خبری نیست';
-    }catch(e){
-        console.error(e);
-        alert('خطا در بارگذاری: '+e);
-    }
-}
-
-initChart();
-document.getElementById('btn').addEventListener('click', loadData);
-</script>
 </body>
 </html>
