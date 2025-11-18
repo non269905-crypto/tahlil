@@ -11,10 +11,10 @@ from yahooquery import Ticker
 import feedparser
 
 # -----------------------------------------
-#  SETTINGS (شامل آدرس پروکسی بایننس)
+#  SETTINGS
 # -----------------------------------------
 
-# آدرس پروکسی Cloudflare Worker شما (برای رفع مشکل ۴۵۱ بایننس)
+# آدرس پروکسی Cloudflare Worker شما 
 BINANCE_PROXY = "https://pro2.bagheryane.workers.dev" 
 
 TWELVE_API = os.getenv("TWELVEDATA_API_KEY", "").strip()
@@ -41,7 +41,6 @@ def cache_ttl(ttl=30):
             # 1. مدیریت آرگومان‌های موقعیتی (*args)
             hashable_args = []
             for arg in args:
-                # تبدیل لیست یا ست به تاپل
                 if isinstance(arg, (list, set)):
                     hashable_args.append(tuple(arg))
                 else:
@@ -249,7 +248,6 @@ def fetch_news_for_symbol(symbol, limit=10):
 # ---------- translation using LibreTranslate ----------
 @cache_ttl(ttl=300)
 def translate_texts_to_fa(texts: List[str]):
-    # Note: 'texts' is now hashable because of the cache_ttl wrapper fix.
     if not texts:
         return []
     out = []
@@ -374,6 +372,7 @@ def symbols(source: str = Query("binance")):
             uniq = top + [s for s in syms if s not in top]
             return uniq[:600]
         except Exception:
+            # Fallback when Binance API is inaccessible
             return ["BTCUSDT","ETHUSDT","BNBUSDT","SOLUSDT"]
     if source == "twelve":
         return ["AAPL","TSLA","MSFT","GOOGL","EURUSD","GBPUSD","XAUUSD"]
@@ -389,19 +388,23 @@ def analyze(symbol: str = Query("BTCUSDT"), interval: str = Query("1h"), limit: 
             raise ValueError("No data returned")
         df2 = generate_signals(df)
         if df2 is None or df2.empty:
-            return JSONResponse({"chart":[],"indicators":[],"trades":[],"metrics":{},"interpretation":["not enough data"],"headlines":[],"forexfactory":[]}, status_code=200)
+            return JSONResponse({"chart":[],"indicators":[],"trades":[],"metrics":{},"interpretation":["not enough data"],"headlines":[],"forexfactory":[],"translated_headlines":[]}, status_code=200)
+        
         trades, metrics = simple_backtest(df2)
         headlines = fetch_news_for_symbol(symbol, limit=8)
         translated = translate_texts_to_fa(headlines)
         ff = fetch_forexfactory(limit=8)
         hybrid_score, hybrid_reason = hybrid_signal_score(df2, headlines)
+        
         tail = df2[['Open','High','Low','Close']].tail(limit).reset_index()
         tail.rename(columns={"index":"datetime"}, inplace=True)
         indicators = df2[['EMA12','EMA26','RSI14','MACD','MACD_SIGNAL','BB_UP','BB_LOW']].tail(limit).reset_index().to_dict(orient='records')
+        
         interpretation = [
             f"Hybrid score: {hybrid_score:.3f} ({hybrid_reason})",
             f"Signals count: {int(metrics.get('n_trades',0))}"
         ]
+        
         return {
             "chart": tail.to_dict(orient='records'),
             "indicators": indicators,
@@ -413,11 +416,13 @@ def analyze(symbol: str = Query("BTCUSDT"), interval: str = Query("1h"), limit: 
             "forexfactory": ff
         }
     except Exception as e:
+        # Custom handlers for known TwelveData errors
         if "TwelveData HTTP" in str(e) and "401" in str(e):
             return JSONResponse({"error": "TwelveData API Key is invalid or expired."}, status_code=500)
         if "TwelveData HTTP" in str(e) and "429" in str(e):
             return JSONResponse({"error": "TwelveData rate limit exceeded."}, status_code=500)
             
+        # The final, generic JSON error response
         return JSONResponse({"error": str(e)}, status_code=500)
 
 @app.get("/health")
