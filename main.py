@@ -13,10 +13,14 @@ import feedparser
 # -----------------------------------------
 
 # Your Cloudflare Worker proxy
-BINANCE_PROXY = "https://pro.bagheryane.workers.dev"
+
+
+# آدرس پروکسی جدیدی که ساختید را اینجا قرار دهید
+[cite_start]BINANCE_PROXY = "https://pro2.bagheryane.workers.dev" # [cite: 1]
 
 # TwelveData API key (optional)
 TWELVE_API = os.getenv("TWELVEDATA_API_KEY", "").strip()
+# ...
 
 app = FastAPI(title="Hybrid Trading Server")
 
@@ -294,3 +298,4 @@ def symbols(source: str = "binance"):
 # -----------------------------------------
 
 app.mount("/", StaticFiles(directory="static", html=True), name="static")
+
