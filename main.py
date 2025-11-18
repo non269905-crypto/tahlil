@@ -68,7 +68,7 @@ def cache_ttl(ttl=30):
         return wrapper
     return deco
 
-# ---------- indicators (صحیح) ----------
+# ---------- indicators ----------
 def EMA(s, span): return s.ewm(span=span, adjust=False).mean()
 def RSI(series, period=14):
     delta = series.diff()
@@ -115,7 +115,6 @@ def fetch_ohlc_twelvedata(symbol, interval, outputsize=500, timezone="UTC"):
         raise ValueError(f"TwelveData error: {j}")
     vals = j["values"]
     df = pd.DataFrame(vals)
-    # convert numeric columns
     for c in ["open","high","low","close","volume"]:
         if c in df.columns:
             df[c] = pd.to_numeric(df[c], errors="coerce")
@@ -127,7 +126,6 @@ def fetch_ohlc_twelvedata(symbol, interval, outputsize=500, timezone="UTC"):
 
 @cache_ttl(ttl=60)
 def fetch_ohlc_binance(symbol, interval="1h", limit=500):
-    # FIX: استفاده از پروکسی بایننس
     base = BINANCE_PROXY.rstrip("/")
     url = f"{base}/api/v3/klines"
     
@@ -151,12 +149,11 @@ def fetch_ohlc_binance(symbol, interval="1h", limit=500):
     df = pd.DataFrame(rows).set_index("datetime")
     return df
 
-# FIX: تابع نگاشت تایم‌فریم‌ها برای یاهو (رفع خطای date cndate)
 def map_interval_to_yahoo(interval: str) -> str:
     """Maps app interval names (e.g., '1min') to yahooquery's required format (e.g., '1m')."""
     mapping = {
         "1min": "1m", "5min": "5m", "15min": "15m", "30min": "30m",
-        "1h": "1h", "4h": "90m", # 4h not supported, use 90m
+        "1h": "1h", "4h": "90m",
         "1day": "1d",
     }
     return mapping.get(interval, "1h")
@@ -173,11 +170,9 @@ def fetch_ohlc_yahooquery(symbol, interval, period='7d'):
         df = pd.DataFrame(df)
         
     local = df.copy() if isinstance(df, pd.DataFrame) else pd.DataFrame(df)
-    
-    # normalize columns
     local.columns = [c.capitalize() if c.lower() in ['open','high','low','close','volume'] else c for c in local.columns]
     
-    # Ensure index is datetime (Handling different index names from yahooquery)
+    # Logic to handle index normalization (to fix date cndate errors)
     if 'Datetime' in local.columns:
         local['datetime'] = pd.to_datetime(local['Datetime'])
         local.set_index('datetime', inplace=True)
@@ -203,10 +198,8 @@ def fetch_ohlc(symbol, interval, limit_or_period=500, source="twelve"):
     if source == "twelve":
         return fetch_ohlc_twelvedata(symbol, interval, outputsize=limit_or_period)
     if source == "yahoo":
-        # FIX: اعمال نگاشت و محدودیت زمانی یاهو
         yahoo_interval = map_interval_to_yahoo(interval)
         period_str = f"{max(1,int(limit_or_period/24))}d"
-        # Yahoo limits minute data to 7 days
         if yahoo_interval in ["1m", "5m", "15m", "30m"]:
             period_str = "7d"
             
@@ -214,7 +207,7 @@ def fetch_ohlc(symbol, interval, limit_or_period=500, source="twelve"):
         
     raise ValueError("Unknown source")
 
-# ---------- ForexFactory RSS (صحیح) ----------
+# ---------- ForexFactory RSS ----------
 @cache_ttl(ttl=300)
 def fetch_forexfactory(limit=30):
     url = "https://cdn-nfs.faireconomy.media/ff_calendar_thisweek.xml"
@@ -227,7 +220,7 @@ def fetch_forexfactory(limit=30):
     except Exception:
         return []
 
-# ---------- simple news / headlines (صحیح) ----------
+# ---------- simple news / headlines ----------
 @cache_ttl(ttl=120)
 def fetch_news_for_symbol(symbol, limit=10):
     headlines = []
@@ -245,7 +238,6 @@ def fetch_news_for_symbol(symbol, limit=10):
                 headlines.append(it.get("title") or it.get("headline") or "")
     except Exception:
         pass
-    # add forex factory
     try:
         ff = fetch_forexfactory(limit=5)
         for f in ff[:limit]:
@@ -254,9 +246,10 @@ def fetch_news_for_symbol(symbol, limit=10):
         pass
     return [h for h in headlines if h]
 
-# ---------- translation using LibreTranslate (صحیح) ----------
+# ---------- translation using LibreTranslate ----------
 @cache_ttl(ttl=300)
 def translate_texts_to_fa(texts: List[str]):
+    # Note: 'texts' is now hashable because of the cache_ttl wrapper fix.
     if not texts:
         return []
     out = []
@@ -273,7 +266,7 @@ def translate_texts_to_fa(texts: List[str]):
             out.append(t)
     return out
 
-# ---------- simple sentiment (صحیح) ----------
+# ---------- simple sentiment ----------
 POS = {"up","rise","positive","beat","strong","gain","higher","cut","eased","easing","surge"}
 NEG = {"down","drop","miss","weak","loss","lower","bear","bearish","hike","inflation"}
 def headline_sentiment(headline):
@@ -285,7 +278,7 @@ def headline_sentiment(headline):
         if w in h: s -= 1
     return s
 
-# ---------- signals / backtest (صحیح) ----------
+# ---------- signals / backtest ----------
 def generate_signals(df):
     df = df.copy()
     df['EMA12'] = EMA(df['Close'], 12)
@@ -343,7 +336,7 @@ def simple_backtest(df, signal_col='signal'):
     max_loss = float(min([t['return'] for t in trades]) if trades else 0.0)
     return trades, {'total_return':total_return,'avg_return':avg_ret,'win_rate':win_rate,'n_trades':len(trades),'max_win':max_win,'max_loss':max_loss}
 
-# ---------- hybrid scoring (صحیح) ----------
+# ---------- hybrid scoring ----------
 def hybrid_signal_score(df, headlines: List[str]):
     if df.empty:
         return 0.0, "No data"
@@ -369,7 +362,7 @@ def hybrid_signal_score(df, headlines: List[str]):
     reason = f"tech={score:.2f},news={news_score:.2f}"
     return final, reason
 
-# ---------- endpoints (صحیح) ----------
+# ---------- endpoints ----------
 @app.get("/symbols")
 def symbols(source: str = Query("binance")):
     if source == "binance":
@@ -420,7 +413,6 @@ def analyze(symbol: str = Query("BTCUSDT"), interval: str = Query("1h"), limit: 
             "forexfactory": ff
         }
     except Exception as e:
-        # Check for specific TwelveData error and show better message
         if "TwelveData HTTP" in str(e) and "401" in str(e):
             return JSONResponse({"error": "TwelveData API Key is invalid or expired."}, status_code=500)
         if "TwelveData HTTP" in str(e) and "429" in str(e):
