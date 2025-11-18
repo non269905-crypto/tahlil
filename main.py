@@ -1,34 +1,40 @@
+# main.py
 import os, time, requests
 from functools import wraps
-import pandas as pd
+from typing import List
 import numpy as np
+import pandas as pd
 from fastapi import FastAPI, Query
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from yahooquery import Ticker
 import feedparser
 
 # -----------------------------------------
-#  SETTINGS
+#  SETTINGS (CORRECTION: Re-adding BINANCE_PROXY)
 # -----------------------------------------
 
-# آدرس پروکسی جدید Cloudflare که ساختید:
-BINANCE_PROXY = "https://pro2.bagheryane.workers.dev"
+# آدرس پروکسی Cloudflare Worker شما
+BINANCE_PROXY = "https://pro2.bagheryane.workers.dev" 
 
-# TwelveData API key (optional)
 TWELVE_API = os.getenv("TWELVEDATA_API_KEY", "").strip()
 
-app = FastAPI(title="Hybrid Trading Server")
+app = FastAPI(title="Hybrid Trading Analysis - MultiSource")
+
+# serve static
+app.mount("/static", StaticFiles(directory="static"), name="static")
+
+@app.get("/")
+def home():
+    return FileResponse("static/index.html")
 
 
-# -----------------------------------------
-#  SIMPLE TTL CACHE
-# -----------------------------------------
-
+# ---------- simple in-memory cache (TTL) ----------
 _cache = {}
-def cache(ttl=30):
-    def wrap(func):
-        def run(*args, **kwargs):
+def cache_ttl(ttl=30):
+    def deco(func):
+        @wraps(func)
+        def wrapper(*args, **kwargs):
             key = (func.__name__, args, tuple(sorted(kwargs.items())))
             now = time.time()
             if key in _cache:
@@ -38,262 +44,378 @@ def cache(ttl=30):
             val = func(*args, **kwargs)
             _cache[key] = (val, now + ttl)
             return val
-        return run
-    return wrap
+        return wrapper
+    return deco
 
-
-# -----------------------------------------
-#  INDICATORS
-# -----------------------------------------
-
-def EMA(s, p): return s.ewm(span=p, adjust=False).mean()
-
-def RSI(s, p=14):
-    d = s.diff()
-    up, dn = d.clip(lower=0), -d.clip(upper=0)
-    ma_up = up.ewm(com=p - 1, adjust=True).mean()
-    ma_dn = dn.ewm(com=p - 1, adjust=True).mean()
-    rs = ma_up / ma_dn
+# ---------- indicators ----------
+def EMA(s, span): return s.ewm(span=span, adjust=False).mean()
+def RSI(series, period=14):
+    delta = series.diff()
+    up = delta.clip(lower=0)
+    down = -delta.clip(upper=0)
+    ma_up = up.ewm(com=period - 1, adjust=True, min_periods=period).mean()
+    ma_down = down.ewm(com=period - 1, adjust=True, min_periods=period).mean()
+    rs = ma_up / ma_down
+    rs[ma_down == 0] = np.inf
     return 100 - (100 / (1 + rs))
+def MACD(series, s_short=12, s_long=26, s_signal=9):
+    ema_short = EMA(series, s_short)
+    ema_long = EMA(series, s_long)
+    macd = ema_short - ema_long
+    signal = macd.ewm(span=s_signal, adjust=False).mean()
+    hist = macd - signal
+    return macd, signal, hist
+def bollinger(series, window=20, stds=2):
+    ma = series.rolling(window).mean()
+    std = series.rolling(window).std()
+    upper = ma + stds * std
+    lower = ma - stds * std
+    return upper, ma, lower
 
-def MACD(s):
-    e12, e26 = EMA(s, 12), EMA(s, 26)
-    macd = e12 - e26
-    signal = macd.ewm(span=9).mean()
-    return macd, signal
-
-
-# -----------------------------------------
-#  FETCH Binance (via Cloudflare Worker Proxy)
-# -----------------------------------------
-
-@cache(60)
-def fetch_binance(symbol: str, interval: str, limit: int):
-    base = BINANCE_PROXY.rstrip("/")
-    url = f"{base}/api/v3/klines"            # correct path for Worker
-    
-    params = {
-        "symbol": symbol.upper(),
-        "interval": interval,
-        "limit": limit
-    }
-
-    r = requests.get(url, params=params, timeout=10)
-
-    if r.status_code != 200:
-        raise ValueError(f"Binance HTTP {r.status_code}: {r.text[:500]}")
-
-    j = r.json()
-    if not isinstance(j, list):
-        raise ValueError("Invalid Binance response")
-
-    rows = []
-    for c in j:
-        rows.append({
-            "datetime": pd.to_datetime(c[0], unit="ms"),
-            "Open": float(c[1]),
-            "High": float(c[2]),
-            "Low": float(c[3]),
-            "Close": float(c[4]),
-            "Volume": float(c[5]),
-        })
-
-    df = pd.DataFrame(rows).set_index("datetime")
-    return df
-
-
-# -----------------------------------------
-#  FETCH TwelveData
-# -----------------------------------------
-
-@cache(60)
-def fetch_twelvedata(symbol, interval, limit):
+# ---------- fetchers ----------
+@cache_ttl(ttl=60)
+def fetch_ohlc_twelvedata(symbol, interval, outputsize=500, timezone="UTC"):
     if not TWELVE_API:
-        raise ValueError("TWELVEDATA_API_KEY is missing")
-
+        raise ValueError("TWELVEDATA_API_KEY not configured")
     url = "https://api.twelvedata.com/time_series"
     params = {
         "symbol": symbol,
         "interval": interval,
-        "outputsize": limit,
+        "outputsize": outputsize,
+        "timezone": timezone,
+        "format": "JSON",
         "apikey": TWELVE_API
     }
-
-    r = requests.get(url, params=params, timeout=10)
+    r = requests.get(url, params=params, timeout=15)
+    if r.status_code != 200:
+        raise ValueError(f"TwelveData HTTP {r.status_code}: {r.text[:200]}")
     j = r.json()
-
-    vals = j.get("values", [])
-    if not vals:
+    if "values" not in j:
         raise ValueError(f"TwelveData error: {j}")
-
+    vals = j["values"]
     df = pd.DataFrame(vals)
-    df.rename(columns={"open":"Open","high":"High","low":"Low","close":"Close"}, inplace=True)
-    df["datetime"] = pd.to_datetime(df["datetime"])
-    df = df.sort_values("datetime").set_index("datetime")
-    df = df.astype(float)
+    # convert numeric columns
+    for c in ["open","high","low","close","volume"]:
+        if c in df.columns:
+            df[c] = pd.to_numeric(df[c], errors="coerce")
+    df['datetime'] = pd.to_datetime(df['datetime'])
+    df = df.sort_values("datetime").reset_index(drop=True)
+    df.rename(columns={"open":"Open","high":"High","low":"Low","close":"Close","volume":"Volume"}, inplace=True)
+    df.set_index('datetime', inplace=True)
     return df
 
+@cache_ttl(ttl=60)
+def fetch_ohlc_binance(symbol, interval="1h", limit=500):
+    # CORRECTION: Use BINANCE_PROXY
+    base = BINANCE_PROXY.rstrip("/")
+    url = f"{base}/api/v3/klines"
+    
+    params = {"symbol": symbol.upper(), "interval": interval, "limit": limit}
+    r = requests.get(url, params=params, timeout=15)
+    if r.status_code != 200:
+        raise ValueError(f"Binance HTTP {r.status_code}: {r.text[:200]}")
+    j = r.json()
+    if not isinstance(j, list):
+        raise ValueError("Invalid Binance response")
+    rows = []
+    for k in j:
+        rows.append({
+            "datetime": pd.to_datetime(k[0], unit='ms'),
+            "Open": float(k[1]),
+            "High": float(k[2]),
+            "Low": float(k[3]),
+            "Close": float(k[4]),
+            "Volume": float(k[5])
+        })
+    df = pd.DataFrame(rows).set_index("datetime")
+    return df
 
-# -----------------------------------------
-#  FETCH YahooQuery
-# -----------------------------------------
+# CORRECTION: New helper function for Yahoo interval mapping
+def map_interval_to_yahoo(interval: str) -> str:
+    """Maps app interval names (e.g., '1min') to yahooquery's required format (e.g., '1m')."""
+    mapping = {
+        "1min": "1m",
+        "5min": "5m",
+        "15min": "15m",
+        "30min": "30m",
+        "1h": "1h",
+        "4h": "90m", # 4h not natively supported by yahooquery, using 90m as best proxy
+        "1day": "1d",
+    }
+    return mapping.get(interval, "1h") # Default to 1h if unknown
 
-@cache(60)
-def fetch_yahoo(symbol, interval, limit):
+@cache_ttl(ttl=60)
+def fetch_ohlc_yahooquery(symbol, interval, period='7d'):
     t = Ticker(symbol)
-    df = t.history(interval=interval, period=f"{max(1,limit//24)}d")
+    df = t.history(interval=interval, period=period)
+    
+    if df is None or df.empty:
+        raise ValueError("No data from yahooquery (possibly symbol/interval/period mismatch)")
+    
+    # Existing logic to handle index and column normalization
+    if isinstance(df, dict):
+        df = pd.DataFrame(df)
+    local = df.copy() if isinstance(df, pd.DataFrame) else pd.DataFrame(df)
+    local.columns = [c.capitalize() if c.lower() in ['open','high','low','close','volume'] else c for c in local.columns]
+    
+    if 'Datetime' in local.columns: # Sometimes the index is named 'Datetime'
+        local['datetime'] = pd.to_datetime(local['Datetime'])
+        local.set_index('datetime', inplace=True)
+    elif 'date' in local.columns:
+        local['datetime'] = pd.to_datetime(local['Date'])
+        local.set_index('datetime', inplace=True)
+    else:
+        local.index = pd.to_datetime(local.index)
 
-    if not isinstance(df, pd.DataFrame):
-        raise ValueError("YahooQuery returned no data")
-
-    df.rename(columns=lambda x: x.capitalize(), inplace=True)
-    df["datetime"] = pd.to_datetime(df["date"])
-    df = df.set_index("datetime")
-    return df[["Open","High","Low","Close"]]
+    if not set(['Open','High','Low','Close']).issubset(set(local.columns)):
+        raise ValueError("yahooquery missing ohlc columns")
+    return local[['Open','High','Low','Close']].copy()
 
 
-# -----------------------------------------
-#  DISPATCH FETCHER
-# -----------------------------------------
-
-def fetch_data(symbol, interval, limit, source):
+def fetch_ohlc(symbol, interval, limit_or_period=500, source="twelve"):
+    source = (source or "twelve").lower()
+    
     if source == "binance":
-        return fetch_binance(symbol, interval, limit)
+        return fetch_ohlc_binance(symbol, interval, limit_or_period)
+        
     if source == "twelve":
-        return fetch_twelvedata(symbol, interval, limit)
+        return fetch_ohlc_twelvedata(symbol, interval, outputsize=limit_or_period)
+        
     if source == "yahoo":
-        return fetch_yahoo(symbol, interval, limit)
-    raise ValueError("Invalid source")
+        # CORRECTION: Apply mapping and adjust period based on interval
+        yahoo_interval = map_interval_to_yahoo(interval)
+        period_str = f"{max(1,int(limit_or_period/24))}d"
+        # Yahoo limits minute data to 7 days
+        if yahoo_interval in ["1m", "5m", "15m", "30m"]:
+            period_str = "7d"
+            
+        return fetch_ohlc_yahooquery(symbol, yahoo_interval, period=period_str)
+        
+    raise ValueError("Unknown source")
 
+# ---------- ForexFactory RSS ----------
+@cache_ttl(ttl=300)
+def fetch_forexfactory(limit=30):
+    url = "https://cdn-nfs.faireconomy.media/ff_calendar_thisweek.xml"
+    try:
+        feed = feedparser.parse(url)
+        items = []
+        for e in feed.entries[:limit]:
+            items.append({"title": e.get("title",""), "published": e.get("published",""), "raw": str(e)})
+        return items
+    except Exception:
+        return []
 
-# -----------------------------------------
-#  NEWS + FOREXFACTORY
-# -----------------------------------------
-
-@cache(180)
-def fetch_news(symbol):
-    titles = []
-
-    # yahooquery news
+# ---------- simple news / headlines (yahooquery primary) ----------
+@cache_ttl(ttl=120)
+def fetch_news_for_symbol(symbol, limit=10):
+    headlines = []
     try:
         t = Ticker(symbol)
-        n = t.news or []
-        for item in n[:10]:
-            titles.append(item.get("title") or "")
-    except:
+        j = t.news
+        if isinstance(j, dict):
+            for k in j:
+                items = j.get(k, [])
+                for it in items[:limit]:
+                    if it:
+                        headlines.append(it.get("title") or it.get("headline") or "")
+        elif isinstance(j, list):
+            for it in j[:limit]:
+                headlines.append(it.get("title") or it.get("headline") or "")
+    except Exception:
         pass
-
-    # forex factory
+    # add forex factory
     try:
-        ff = feedparser.parse("https://cdn-nfs.faireconomy.media/ff_calendar_thisweek.xml")
-        for e in ff.entries[:10]:
-            titles.append(e.get("title",""))
+        ff = fetch_forexfactory(limit=5)
+        for f in ff[:limit]:
+            headlines.append(f.get("title",""))
     except:
         pass
+    return [h for h in headlines if h]
 
-    return [t for t in titles if t]
+# ---------- translation using LibreTranslate (public) ----------
+@cache_ttl(ttl=300)
+def translate_texts_to_fa(texts: List[str]):
+    if not texts:
+        return []
+    out = []
+    # This public instance may be unstable or blocked.
+    url = "https://translate.argosopentech.com/translate" 
+    for t in texts:
+        try:
+            r = requests.post(url, json={"q": t, "source": "auto", "target": "fa", "format": "text"}, timeout=8)
+            if r.status_code == 200:
+                j = r.json()
+                out.append(j.get("translatedText", t))
+            else:
+                out.append(t)
+        except Exception:
+            out.append(t)
+    return out
 
+# ---------- simple sentiment ----------
+POS = {"up","rise","positive","beat","strong","gain","higher","cut","eased","easing","surge"}
+NEG = {"down","drop","miss","weak","loss","lower","bear","bearish","hike","inflation"}
+def headline_sentiment(headline):
+    h = str(headline).lower()
+    s = 0
+    for w in POS:
+        if w in h: s += 1
+    for w in NEG:
+        if w in h: s -= 1
+    return s
 
-# -----------------------------------------
-#  SIGNALS + BACKTEST
-# -----------------------------------------
-
-def compute_signals(df):
+# ---------- signals / backtest ----------
+def generate_signals(df):
     df = df.copy()
-    df["EMA12"] = EMA(df.Close, 12)
-    df["EMA26"] = EMA(df.Close, 26)
-    df["RSI"]   = RSI(df.Close)
-    df["MACD"], df["MACD_SIGNAL"] = MACD(df.Close)
-    df.dropna(inplace=True)
-
-    df["sig"] = 0
-    df.loc[(df.MACD > df.MACD_SIGNAL) & (df.RSI < 70), "sig"] = 1
-    df.loc[(df.MACD < df.MACD_SIGNAL) | (df.RSI > 85), "sig"] = -1
+    df['EMA12'] = EMA(df['Close'], 12)
+    df['EMA26'] = EMA(df['Close'], 26)
+    df['RSI14'] = RSI(df['Close'], 14)
+    df['MACD'], df['MACD_SIGNAL'], df['MACD_HIST'] = MACD(df['Close'])
+    df['BB_UP'], df['BB_MID'], df['BB_LOW'] = bollinger(df['Close'])
+    df.dropna(subset=['EMA26','RSI14','MACD_SIGNAL'], inplace=True)
+    if df.empty:
+        return df
+    df['MACD_cross'] = (df['MACD'] > df['MACD_SIGNAL']).astype(int)
+    df['signal'] = 0
+    df.loc[(df['MACD_cross'].diff() == 1) & (df['RSI14'] < 75), 'signal'] = 1
+    df.loc[(df['MACD_cross'].diff() == -1) | (df['RSI14'] > 85), 'signal'] = -1
+    df['signal'].fillna(0, inplace=True)
     return df
 
-
-def backtest(df):
+def simple_backtest(df, signal_col='signal'):
     trades = []
-    pos = None
-
+    position = None
+    if df.empty:
+        return trades, {'total_return':0,'avg_return':0,'win_rate':0,'n_trades':0}
     for i in range(len(df)-1):
-        sig = df.iloc[i]["sig"]
-        next_open = df.iloc[i+1]["Open"]
-        next_time = df.index[i+1]
-
-        if sig == 1 and pos is None:
-            pos = {"entry": next_open, "time": next_time}
-
-        elif sig == -1 and pos:
-            ret = (next_open - pos["entry"]) / pos["entry"]
+        s = df.iloc[i][signal_col]
+        next_open = float(df.iloc[i+1]['Open'])
+        date = df.index[i+1]
+        if s == 1 and position is None:
+            position = {'entry_price': next_open, 'entry_time': date}
+        elif s == -1 and position is not None:
+            entry = position
+            exit_price = next_open
+            ret = (exit_price - entry['entry_price']) / entry['entry_price']
             trades.append({
-                "entry_price": pos["entry"],
-                "exit_price": next_open,
-                "return": ret,
-                "entry_time": pos["time"].isoformat(),
-                "exit_time": next_time.isoformat(),
+                'entry_time': entry['entry_time'].isoformat(),
+                'exit_time': date.isoformat(),
+                'entry_price': float(entry['entry_price']),
+                'exit_price': float(exit_price),
+                'return': float(ret)
             })
-            pos = None
+            position = None
+    if position is not None:
+        last_price = float(df.iloc[-1]['Close'])
+        ret = (last_price - position['entry_price']) / position['entry_price']
+        trades.append({
+            'entry_time': position['entry_time'].isoformat(),
+            'exit_time': df.index[-1].isoformat(),
+            'entry_price': float(position['entry_price']),
+            'exit_price': float(last_price),
+            'return': float(ret)
+        })
+    total_return = np.prod([1 + t['return'] for t in trades]) - 1 if trades else 0.0
+    avg_ret = float(np.mean([t['return'] for t in trades]) if trades else 0.0)
+    win_rate = float(np.mean([1 if t['return']>0 else 0 for t in trades]) if trades else 0.0)
+    max_win = float(max([t['return'] for t in trades]) if trades else 0.0)
+    max_loss = float(min([t['return'] for t in trades]) if trades else 0.0)
+    return trades, {'total_return':total_return,'avg_return':avg_ret,'win_rate':win_rate,'n_trades':len(trades),'max_win':max_win,'max_loss':max_loss}
 
-    metrics = {
-        "n": len(trades),
-        "avg": float(np.mean([t["return"] for t in trades])) if trades else 0,
-        "win": float(np.mean([t["return"] > 0 for t in trades])) if trades else 0
-    }
+# ---------- hybrid scoring ----------
+def hybrid_signal_score(df, headlines: List[str]):
+    if df.empty:
+        return 0.0, "No data"
+    last = df.iloc[-1]
+    score = 0.0
+    if last['EMA12'] > last['EMA26']:
+        score += 0.5
+    else:
+        score -= 0.5
+    if last['MACD'] > last['MACD_SIGNAL']:
+        score += 0.3
+    else:
+        score -= 0.3
+    if last['RSI14'] < 30:
+        score += 0.2
+    if last['RSI14'] > 70:
+        score -= 0.2
+    s = 0
+    for h in headlines:
+        s += headline_sentiment(h)
+    news_score = max(-5, min(5, s)) / 5.0 if headlines else 0.0
+    final = 0.7 * score + 0.3 * news_score
+    reason = f"tech={score:.2f},news={news_score:.2f}"
+    return final, reason
 
-    return trades, metrics
-
-
-# -----------------------------------------
-#  API: /analyze
-# -----------------------------------------
+# ---------- endpoints ----------
+@app.get("/symbols")
+def symbols(source: str = Query("binance")):
+    if source == "binance":
+        try:
+            r = requests.get("https://api.binance.com/api/v3/exchangeInfo", timeout=10)
+            j = r.json()
+            syms = [s["symbol"] for s in j.get("symbols", []) if s.get("status")=="TRADING"]
+            # return some common ones first
+            top = ["BTCUSDT","ETHUSDT","BNBUSDT","SOLUSDT","XRPUSDT","ADAUSDT"]
+            uniq = top + [s for s in syms if s not in top]
+            return uniq[:600]  # limit to 600 to avoid huge payload
+        except Exception:
+            # Fallback when Binance API is inaccessible (e.g. via proxy)
+            return ["BTCUSDT","ETHUSDT","BNBUSDT","SOLUSDT"]
+    if source == "twelve":
+        return ["AAPL","TSLA","MSFT","GOOGL","EURUSD","GBPUSD","XAUUSD"]
+    if source == "yahoo":
+        return ["BTC-USD", "ETH-USD", "AAPL", "TSLA", "^GSPC"]
+    return []
 
 @app.get("/analyze")
-def analyze(
-    symbol: str = Query("BTCUSDT"),
-    interval: str = Query("1h"),
-    limit: int = Query(500),
-    source: str = Query("binance")
-):
+def analyze(symbol: str = Query("BTCUSDT"), interval: str = Query("1h"), limit: int = Query(500), source: str = Query("binance")):
     try:
-        df = fetch_data(symbol, interval, limit, source)
-        df2 = compute_signals(df)
-        trades, metrics = backtest(df2)
-        headlines = fetch_news(symbol)
-
-        chart = df2[["Open","High","Low","Close"]].reset_index().to_dict("records")
-        indicators = df2[["EMA12","EMA26","RSI","MACD","MACD_SIGNAL"]].reset_index().to_dict("records")
-
+        df = fetch_ohlc(symbol, interval, limit, source)
+        if df is None or df.empty:
+            raise ValueError("No data returned")
+        df2 = generate_signals(df)
+        if df2 is None or df2.empty:
+            return JSONResponse({"chart":[],"indicators":[],"trades":[],"metrics":{},"interpretation":["not enough data"],"headlines":[],"forexfactory":[],"translated_headlines":[]}, status_code=200)
+        
+        trades, metrics = simple_backtest(df2)
+        headlines = fetch_news_for_symbol(symbol, limit=8)
+        translated = translate_texts_to_fa(headlines)
+        ff = fetch_forexfactory(limit=8)
+        hybrid_score, hybrid_reason = hybrid_signal_score(df2, headlines)
+        
+        # Prepare data for front-end
+        tail = df2[['Open','High','Low','Close']].tail(limit).reset_index()
+        tail.rename(columns={"index":"datetime"}, inplace=True)
+        
+        indicators = df2[['EMA12','EMA26','RSI14','MACD','MACD_SIGNAL','BB_UP','BB_LOW']].tail(limit).reset_index().to_dict(orient='records')
+        
+        interpretation = [
+            f"Hybrid score: {hybrid_score:.3f} ({hybrid_reason})",
+            f"Signals count: {int(metrics.get('n_trades',0))}"
+        ]
+        
         return {
-            "chart": chart,
+            "chart": tail.to_dict(orient='records'),
             "indicators": indicators,
             "trades": trades,
             "metrics": metrics,
-            "news": headlines
+            "interpretation": interpretation,
+            "headlines": headlines,
+            "translated_headlines": translated,
+            "forexfactory": ff
         }
-
     except Exception as e:
+        # Check for specific TwelveData error and show better message
+        if "TwelveData HTTP" in str(e) and "401" in str(e):
+            return JSONResponse({"error": "TwelveData API Key is invalid or expired."}, status_code=500)
+        if "TwelveData HTTP" in str(e) and "429" in str(e):
+            return JSONResponse({"error": "TwelveData rate limit exceeded."}, status_code=500)
+            
         return JSONResponse({"error": str(e)}, status_code=500)
 
-
-# -----------------------------------------
-#  /symbols
-# -----------------------------------------
-
-@app.get("/symbols")
-def symbols(source: str = "binance"):
-    if source == "binance":
-        # اینها نمادهای Binance هستند که با پروکسی کار خواهند کرد
-        return ["BTCUSDT","ETHUSDT","SOLUSDT","XRPUSDT"]
-    if source == "twelve":
-        # اینها نمادهای سهام برای TwelveData هستند
-        return ["AAPL","TSLA","MSFT","AMZN"]
-    # نمادهای Yahoo
-    return ["BTC-USD","ETH-USD","AAPL"]
-
-
-# -----------------------------------------
-#  STATIC FILES
-# -----------------------------------------
-
-app.mount("/", StaticFiles(directory="static", html=True), name="static")
+@app.get("/health")
+def health():
+    return {"status":"ok"}
