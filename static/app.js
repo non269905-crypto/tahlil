@@ -98,6 +98,14 @@ async function loadData() {
 
     try {
         const res = await fetch(`/analyze?symbol=${encodeURIComponent(symbol)}&interval=${encodeURIComponent(interval)}&source=${encodeURIComponent(source)}&limit=500`);
+        
+        // FIX: Ensure response is OK before attempting to parse as JSON
+        if (!res.ok) {
+            const text = await res.text();
+            // This captures the raw "Internal Server Error" text
+            throw new Error(`Server returned HTTP ${res.status}: ${text.substring(0, 100)}`);
+        }
+
         const j = await res.json();
         
         if (j.error) {
@@ -144,8 +152,9 @@ async function loadData() {
 
     } catch (e) {
         console.error("Data load error:", e);
+        // Display the error text received from the server
         alert("خطای ارتباطی: " + e.message);
-        document.getElementById("summary").innerText = "خطا در بارگذاری داده‌ها";
+        document.getElementById("summary").innerText = "خطا در بارگذاری داده‌ها. (مشکل سرور)";
     }
 }
 
