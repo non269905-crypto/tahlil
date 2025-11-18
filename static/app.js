@@ -2,6 +2,7 @@ let chart, candleSeries, ema12Series, ema26Series;
 
 function initChart() {
     const container = document.getElementById("chart");
+    if (!container) return; // Prevent error if container is not found
     chart = LightweightCharts.createChart(container, {
         width: container.clientWidth,
         height: 560,
@@ -19,54 +20,99 @@ function initChart() {
     ema26Series = chart.addLineSeries({ color: "#ff9800", lineWidth: 2 });
 
     window.addEventListener("resize", () => {
-        chart.applyOptions({ width: container.clientWidth });
+        if (chart) {
+            chart.applyOptions({ width: container.clientWidth });
+        }
     });
 }
 
 function toUnixSeconds(t) {
     // accept ISO string or pandas timestamp
     const d = new Date(t);
-    if (isNaN(d)) return Math.floor(Date.now() / 1000);
+    // Handle potential pandas float timestamps
+    if (isNaN(d) && typeof t === 'number') {
+        // Assume milliseconds if it's a large number
+        return Math.floor(t / 1000);
+    }
     return Math.floor(d.getTime() / 1000);
 }
 
-async function loadSymbols() {
+// *** CORRECTION: Unified function for synchronization ***
+async function loadSymbolsAndData() {
+    const source = document.getElementById("source").value;
+    const sel = document.getElementById("symbol");
+    
+    document.getElementById("summary").innerText = `در حال بارگذاری نمادها از ${source}...`;
+
+    // 1. Load symbols based on current source
     try {
-        const res = await fetch("/symbols?source=binance");
+        // CORRECTION: Use the dynamic source value for fetching symbols
+        const res = await fetch(`/symbols?source=${source}`);
         const syms = await res.json();
-        const sel = document.getElementById("symbol");
+        
         sel.innerHTML = "";
-        syms.slice(0,200).forEach(s => {
+        syms.forEach(s => {
             const o = document.createElement("option");
             o.value = s;
             o.textContent = s;
             sel.appendChild(o);
         });
-        // set default
-        if (!sel.value) sel.value = "BTCUSDT";
+
+        // 2. Set a default symbol
+        if (syms.length > 0) {
+             // For Yahoo, set a common default
+             if (source === "yahoo") {
+                sel.value = syms.find(s => s === "BTC-USD") || syms[0];
+             } else {
+                sel.value = syms[0]; 
+             }
+        }
+
     } catch (e) {
-        console.error("symbols load error", e);
-        const sel = document.getElementById("symbol");
-        sel.innerHTML = "<option>BTCUSDT</option>";
+        console.error("Symbols load error:", e);
+        sel.innerHTML = "<option value=''>خطا در بارگذاری نمادها</option>";
+        document.getElementById("summary").innerText = "خطا: نمادها بارگذاری نشدند.";
+        return; 
+    }
+
+    // 3. If symbols loaded successfully, load the data
+    if (sel.value) {
+        loadData();
     }
 }
 
 async function loadData() {
-    const symbol = document.getElementById("symbol").value || "BTCUSDT";
+    const symbol = document.getElementById("symbol").value;
     const interval = document.getElementById("interval").value || "1h";
     const source = document.getElementById("source").value || "binance";
 
-    document.getElementById("summary").innerText = "در حال بارگذاری...";
+    if (!symbol) {
+        document.getElementById("summary").innerText = "لطفا یک نماد انتخاب کنید.";
+        return;
+    }
+
+    document.getElementById("summary").innerText = "در حال بارگذاری داده‌های معاملاتی...";
+    // Clear previous results
+    document.getElementById("metrics").innerText = "";
+    document.getElementById("interpret").innerText = "";
+    document.getElementById("news").innerText = "—";
+    document.getElementById("news_fa").innerText = "—";
+    document.getElementById("ff").innerText = "—";
+    candleSeries.setData([]);
+    ema12Series.setData([]);
+    ema26Series.setData([]);
 
     try {
         const res = await fetch(`/analyze?symbol=${encodeURIComponent(symbol)}&interval=${encodeURIComponent(interval)}&source=${encodeURIComponent(source)}&limit=500`);
         const j = await res.json();
+        
         if (j.error) {
-            alert("خطا: " + j.error);
-            document.getElementById("summary").innerText = "خطا";
+            alert(`خطا در ${source}: ${j.error}`);
+            document.getElementById("summary").innerText = `خطا از ${source}: ${j.error}`;
             return;
         }
 
+        // Show chart data
         const chartData = (j.chart || []).map(r => ({
             time: toUnixSeconds(r.datetime),
             open: +r.Open,
@@ -74,14 +120,21 @@ async function loadData() {
             low: +r.Low,
             close: +r.Close
         }));
+        
         candleSeries.setData(chartData);
+        if(chart) chart.timeScale().fitContent();
 
+
+        // Show indicators (Adjusted to match main.py's indicator names)
         const inds = j.indicators || [];
-        const ema12 = inds.map((it,i)=>({ time: chartData[i]?.time, value: it.EMA12 })).filter(x=>x.value!==null);
-        const ema26 = inds.map((it,i)=>({ time: chartData[i]?.time, value: it.EMA26 })).filter(x=>x.value!==null);
+        const ema12 = inds.map(it=>({ time: toUnixSeconds(it.datetime), value: it.EMA12 })).filter(x=>x.value!==null);
+        const ema26 = inds.map(it=>({ time: toUnixSeconds(it.datetime), value: it.EMA26 })).filter(x=>x.value!==null);
+        
         ema12Series.setData(ema12);
         ema26Series.setData(ema26);
 
+
+        // Show trades and metrics
         const trades = j.trades || [];
         candleSeries.setMarkers(trades.flatMap(t=>[
             { time: toUnixSeconds(t.entry_time), position: "belowBar", color: t.return>0 ? "green":"red", shape:"arrowUp", text:"Entry"},
@@ -90,19 +143,35 @@ async function loadData() {
 
         document.getElementById("metrics").innerText = JSON.stringify(j.metrics || {}, null, 2);
         document.getElementById("summary").innerText = trades.length ? `${trades.length} معامله` : "بدون معامله";
-
+        
+        // Show analysis
         document.getElementById("interpret").innerText = (j.interpretation || []).join("\n");
         document.getElementById("news").innerText = (j.headlines || []).join("\n\n---\n\n");
         document.getElementById("news_fa").innerText = (j.translated_headlines || []).join("\n\n---\n\n");
-        document.getElementById("ff").innerText = (j.forexfactory || []).map(f=> `${f.published} — ${f.title}`).join("\n\n---\n\n");
+        // Format ForexFactory data
+        document.getElementById("ff").innerText = (j.forexfactory || []).map(f=> `${f.published.split('T')[0]} — ${f.title}`).join("\n\n---\n\n");
+
 
     } catch (e) {
-        console.error(e);
-        alert("خطا در بارگذاری: " + e);
-        document.getElementById("summary").innerText = "خطا";
+        console.error("Data load error:", e);
+        alert("خطای ارتباطی: " + e.message);
+        document.getElementById("summary").innerText = "خطا در بارگذاری داده‌ها";
     }
 }
 
-initChart();
-loadSymbols();
-document.getElementById("btn").addEventListener("click", loadData);
+// *** CORRECTION: Event Listeners Block ***
+document.addEventListener("DOMContentLoaded", () => {
+    initChart();
+    
+    // Initial load: load symbols and then data
+    loadSymbolsAndData(); 
+
+    document.getElementById("btn").addEventListener("click", loadData);
+    
+    // On source change, reload symbols, which in turn calls loadData
+    document.getElementById("source").addEventListener("change", loadSymbolsAndData);
+
+    // On symbol or interval change, load data
+    document.getElementById("symbol").addEventListener("change", loadData);
+    document.getElementById("interval").addEventListener("change", loadData);
+});
