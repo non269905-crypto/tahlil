@@ -11,10 +11,10 @@ from yahooquery import Ticker
 import feedparser
 
 # -----------------------------------------
-#  SETTINGS (CORRECTION: Re-adding BINANCE_PROXY)
+#  SETTINGS (شامل آدرس پروکسی بایننس)
 # -----------------------------------------
 
-# آدرس پروکسی Cloudflare Worker شما
+# آدرس پروکسی Cloudflare Worker شما (برای رفع مشکل ۴۵۱ بایننس)
 BINANCE_PROXY = "https://pro2.bagheryane.workers.dev" 
 
 TWELVE_API = os.getenv("TWELVEDATA_API_KEY", "").strip()
@@ -35,7 +35,28 @@ def cache_ttl(ttl=30):
     def deco(func):
         @wraps(func)
         def wrapper(*args, **kwargs):
-            key = (func.__name__, args, tuple(sorted(kwargs.items())))
+            
+            # FIX: تبدیل لیست‌ها و مجموعه‌ها به Tuple برای قابل هش شدن (رفع خطای unhashable type: 'list')
+            
+            # 1. مدیریت آرگومان‌های موقعیتی (*args)
+            hashable_args = []
+            for arg in args:
+                # تبدیل لیست یا ست به تاپل
+                if isinstance(arg, (list, set)):
+                    hashable_args.append(tuple(arg))
+                else:
+                    hashable_args.append(arg)
+            
+            # 2. مدیریت آرگومان‌های کلمه‌ای (**kwargs)
+            hashable_kwargs = tuple(
+                sorted(
+                    (k, tuple(v) if isinstance(v, (list, set)) else v) 
+                    for k, v in kwargs.items()
+                )
+            )
+            
+            key = (func.__name__, tuple(hashable_args), hashable_kwargs)
+            
             now = time.time()
             if key in _cache:
                 val, exp = _cache[key]
@@ -47,7 +68,7 @@ def cache_ttl(ttl=30):
         return wrapper
     return deco
 
-# ---------- indicators ----------
+# ---------- indicators (صحیح) ----------
 def EMA(s, span): return s.ewm(span=span, adjust=False).mean()
 def RSI(series, period=14):
     delta = series.diff()
@@ -106,7 +127,7 @@ def fetch_ohlc_twelvedata(symbol, interval, outputsize=500, timezone="UTC"):
 
 @cache_ttl(ttl=60)
 def fetch_ohlc_binance(symbol, interval="1h", limit=500):
-    # CORRECTION: Use BINANCE_PROXY
+    # FIX: استفاده از پروکسی بایننس
     base = BINANCE_PROXY.rstrip("/")
     url = f"{base}/api/v3/klines"
     
@@ -130,19 +151,15 @@ def fetch_ohlc_binance(symbol, interval="1h", limit=500):
     df = pd.DataFrame(rows).set_index("datetime")
     return df
 
-# CORRECTION: New helper function for Yahoo interval mapping
+# FIX: تابع نگاشت تایم‌فریم‌ها برای یاهو (رفع خطای date cndate)
 def map_interval_to_yahoo(interval: str) -> str:
     """Maps app interval names (e.g., '1min') to yahooquery's required format (e.g., '1m')."""
     mapping = {
-        "1min": "1m",
-        "5min": "5m",
-        "15min": "15m",
-        "30min": "30m",
-        "1h": "1h",
-        "4h": "90m", # 4h not natively supported by yahooquery, using 90m as best proxy
+        "1min": "1m", "5min": "5m", "15min": "15m", "30min": "30m",
+        "1h": "1h", "4h": "90m", # 4h not supported, use 90m
         "1day": "1d",
     }
-    return mapping.get(interval, "1h") # Default to 1h if unknown
+    return mapping.get(interval, "1h")
 
 @cache_ttl(ttl=60)
 def fetch_ohlc_yahooquery(symbol, interval, period='7d'):
@@ -151,38 +168,42 @@ def fetch_ohlc_yahooquery(symbol, interval, period='7d'):
     
     if df is None or df.empty:
         raise ValueError("No data from yahooquery (possibly symbol/interval/period mismatch)")
-    
-    # Existing logic to handle index and column normalization
+        
     if isinstance(df, dict):
         df = pd.DataFrame(df)
+        
     local = df.copy() if isinstance(df, pd.DataFrame) else pd.DataFrame(df)
+    
+    # normalize columns
     local.columns = [c.capitalize() if c.lower() in ['open','high','low','close','volume'] else c for c in local.columns]
     
-    if 'Datetime' in local.columns: # Sometimes the index is named 'Datetime'
+    # Ensure index is datetime (Handling different index names from yahooquery)
+    if 'Datetime' in local.columns:
         local['datetime'] = pd.to_datetime(local['Datetime'])
         local.set_index('datetime', inplace=True)
     elif 'date' in local.columns:
         local['datetime'] = pd.to_datetime(local['Date'])
         local.set_index('datetime', inplace=True)
+    elif local.index.name.lower() in ['date','datetime']:
+        local.index = pd.to_datetime(local.index)
+        local.index.name = 'datetime'
     else:
         local.index = pd.to_datetime(local.index)
+        local.index.name = 'datetime'
 
     if not set(['Open','High','Low','Close']).issubset(set(local.columns)):
-        raise ValueError("yahooquery missing ohlc columns")
+        raise ValueError("yahooquery missing ohlc")
+        
     return local[['Open','High','Low','Close']].copy()
-
 
 def fetch_ohlc(symbol, interval, limit_or_period=500, source="twelve"):
     source = (source or "twelve").lower()
-    
     if source == "binance":
         return fetch_ohlc_binance(symbol, interval, limit_or_period)
-        
     if source == "twelve":
         return fetch_ohlc_twelvedata(symbol, interval, outputsize=limit_or_period)
-        
     if source == "yahoo":
-        # CORRECTION: Apply mapping and adjust period based on interval
+        # FIX: اعمال نگاشت و محدودیت زمانی یاهو
         yahoo_interval = map_interval_to_yahoo(interval)
         period_str = f"{max(1,int(limit_or_period/24))}d"
         # Yahoo limits minute data to 7 days
@@ -193,7 +214,7 @@ def fetch_ohlc(symbol, interval, limit_or_period=500, source="twelve"):
         
     raise ValueError("Unknown source")
 
-# ---------- ForexFactory RSS ----------
+# ---------- ForexFactory RSS (صحیح) ----------
 @cache_ttl(ttl=300)
 def fetch_forexfactory(limit=30):
     url = "https://cdn-nfs.faireconomy.media/ff_calendar_thisweek.xml"
@@ -206,7 +227,7 @@ def fetch_forexfactory(limit=30):
     except Exception:
         return []
 
-# ---------- simple news / headlines (yahooquery primary) ----------
+# ---------- simple news / headlines (صحیح) ----------
 @cache_ttl(ttl=120)
 def fetch_news_for_symbol(symbol, limit=10):
     headlines = []
@@ -233,14 +254,13 @@ def fetch_news_for_symbol(symbol, limit=10):
         pass
     return [h for h in headlines if h]
 
-# ---------- translation using LibreTranslate (public) ----------
+# ---------- translation using LibreTranslate (صحیح) ----------
 @cache_ttl(ttl=300)
 def translate_texts_to_fa(texts: List[str]):
     if not texts:
         return []
     out = []
-    # This public instance may be unstable or blocked.
-    url = "https://translate.argosopentech.com/translate" 
+    url = "https://translate.argosopentech.com/translate"
     for t in texts:
         try:
             r = requests.post(url, json={"q": t, "source": "auto", "target": "fa", "format": "text"}, timeout=8)
@@ -253,7 +273,7 @@ def translate_texts_to_fa(texts: List[str]):
             out.append(t)
     return out
 
-# ---------- simple sentiment ----------
+# ---------- simple sentiment (صحیح) ----------
 POS = {"up","rise","positive","beat","strong","gain","higher","cut","eased","easing","surge"}
 NEG = {"down","drop","miss","weak","loss","lower","bear","bearish","hike","inflation"}
 def headline_sentiment(headline):
@@ -265,7 +285,7 @@ def headline_sentiment(headline):
         if w in h: s -= 1
     return s
 
-# ---------- signals / backtest ----------
+# ---------- signals / backtest (صحیح) ----------
 def generate_signals(df):
     df = df.copy()
     df['EMA12'] = EMA(df['Close'], 12)
@@ -323,7 +343,7 @@ def simple_backtest(df, signal_col='signal'):
     max_loss = float(min([t['return'] for t in trades]) if trades else 0.0)
     return trades, {'total_return':total_return,'avg_return':avg_ret,'win_rate':win_rate,'n_trades':len(trades),'max_win':max_win,'max_loss':max_loss}
 
-# ---------- hybrid scoring ----------
+# ---------- hybrid scoring (صحیح) ----------
 def hybrid_signal_score(df, headlines: List[str]):
     if df.empty:
         return 0.0, "No data"
@@ -349,7 +369,7 @@ def hybrid_signal_score(df, headlines: List[str]):
     reason = f"tech={score:.2f},news={news_score:.2f}"
     return final, reason
 
-# ---------- endpoints ----------
+# ---------- endpoints (صحیح) ----------
 @app.get("/symbols")
 def symbols(source: str = Query("binance")):
     if source == "binance":
@@ -357,12 +377,10 @@ def symbols(source: str = Query("binance")):
             r = requests.get("https://api.binance.com/api/v3/exchangeInfo", timeout=10)
             j = r.json()
             syms = [s["symbol"] for s in j.get("symbols", []) if s.get("status")=="TRADING"]
-            # return some common ones first
             top = ["BTCUSDT","ETHUSDT","BNBUSDT","SOLUSDT","XRPUSDT","ADAUSDT"]
             uniq = top + [s for s in syms if s not in top]
-            return uniq[:600]  # limit to 600 to avoid huge payload
+            return uniq[:600]
         except Exception:
-            # Fallback when Binance API is inaccessible (e.g. via proxy)
             return ["BTCUSDT","ETHUSDT","BNBUSDT","SOLUSDT"]
     if source == "twelve":
         return ["AAPL","TSLA","MSFT","GOOGL","EURUSD","GBPUSD","XAUUSD"]
@@ -378,25 +396,19 @@ def analyze(symbol: str = Query("BTCUSDT"), interval: str = Query("1h"), limit: 
             raise ValueError("No data returned")
         df2 = generate_signals(df)
         if df2 is None or df2.empty:
-            return JSONResponse({"chart":[],"indicators":[],"trades":[],"metrics":{},"interpretation":["not enough data"],"headlines":[],"forexfactory":[],"translated_headlines":[]}, status_code=200)
-        
+            return JSONResponse({"chart":[],"indicators":[],"trades":[],"metrics":{},"interpretation":["not enough data"],"headlines":[],"forexfactory":[]}, status_code=200)
         trades, metrics = simple_backtest(df2)
         headlines = fetch_news_for_symbol(symbol, limit=8)
         translated = translate_texts_to_fa(headlines)
         ff = fetch_forexfactory(limit=8)
         hybrid_score, hybrid_reason = hybrid_signal_score(df2, headlines)
-        
-        # Prepare data for front-end
         tail = df2[['Open','High','Low','Close']].tail(limit).reset_index()
         tail.rename(columns={"index":"datetime"}, inplace=True)
-        
         indicators = df2[['EMA12','EMA26','RSI14','MACD','MACD_SIGNAL','BB_UP','BB_LOW']].tail(limit).reset_index().to_dict(orient='records')
-        
         interpretation = [
             f"Hybrid score: {hybrid_score:.3f} ({hybrid_reason})",
             f"Signals count: {int(metrics.get('n_trades',0))}"
         ]
-        
         return {
             "chart": tail.to_dict(orient='records'),
             "indicators": indicators,
