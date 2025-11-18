@@ -12,13 +12,11 @@ import feedparser
 #  SETTINGS
 # -----------------------------------------
 
-# Your Cloudflare Worker proxy
-# آدرس پروکسی جدیدی که ساختید را اینجا قرار دهید
-[cite_start]BINANCE_PROXY = "https://pro2.bagheryane.workers.dev" 
+# آدرس پروکسی جدید Cloudflare که ساختید:
+BINANCE_PROXY = "https://pro2.bagheryane.workers.dev"
 
 # TwelveData API key (optional)
 TWELVE_API = os.getenv("TWELVEDATA_API_KEY", "").strip()
-# ...
 
 app = FastAPI(title="Hybrid Trading Server")
 
@@ -72,7 +70,7 @@ def MACD(s):
 @cache(60)
 def fetch_binance(symbol: str, interval: str, limit: int):
     base = BINANCE_PROXY.rstrip("/")
-    url = f"{base}/api/v3/klines"             # correct path for Worker
+    url = f"{base}/api/v3/klines"            # correct path for Worker
     
     params = {
         "symbol": symbol.upper(),
@@ -285,9 +283,12 @@ def analyze(
 @app.get("/symbols")
 def symbols(source: str = "binance"):
     if source == "binance":
+        # اینها نمادهای Binance هستند که با پروکسی کار خواهند کرد
         return ["BTCUSDT","ETHUSDT","SOLUSDT","XRPUSDT"]
     if source == "twelve":
+        # اینها نمادهای سهام برای TwelveData هستند
         return ["AAPL","TSLA","MSFT","AMZN"]
+    # نمادهای Yahoo
     return ["BTC-USD","ETH-USD","AAPL"]
 
 
@@ -296,5 +297,3 @@ def symbols(source: str = "binance"):
 # -----------------------------------------
 
 app.mount("/", StaticFiles(directory="static", html=True), name="static")
-
-
