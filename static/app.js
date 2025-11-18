@@ -2,7 +2,7 @@ let chart, candleSeries, ema12Series, ema26Series;
 
 function initChart() {
     const container = document.getElementById("chart");
-    if (!container) return; // Prevent error if container is not found
+    if (!container) return;
     chart = LightweightCharts.createChart(container, {
         width: container.clientWidth,
         height: 560,
@@ -27,17 +27,14 @@ function initChart() {
 }
 
 function toUnixSeconds(t) {
-    // accept ISO string or pandas timestamp
     const d = new Date(t);
-    // Handle potential pandas float timestamps
     if (isNaN(d) && typeof t === 'number') {
-        // Assume milliseconds if it's a large number
         return Math.floor(t / 1000);
     }
     return Math.floor(d.getTime() / 1000);
 }
 
-// *** CORRECTION: Unified function for synchronization ***
+// *** رفع خطای ۴۰۴: بارگذاری نمادها و سپس داده‌ها ***
 async function loadSymbolsAndData() {
     const source = document.getElementById("source").value;
     const sel = document.getElementById("symbol");
@@ -46,7 +43,6 @@ async function loadSymbolsAndData() {
 
     // 1. Load symbols based on current source
     try {
-        // CORRECTION: Use the dynamic source value for fetching symbols
         const res = await fetch(`/symbols?source=${source}`);
         const syms = await res.json();
         
@@ -60,7 +56,6 @@ async function loadSymbolsAndData() {
 
         // 2. Set a default symbol
         if (syms.length > 0) {
-             // For Yahoo, set a common default
              if (source === "yahoo") {
                 sel.value = syms.find(s => s === "BTC-USD") || syms[0];
              } else {
@@ -84,7 +79,7 @@ async function loadSymbolsAndData() {
 async function loadData() {
     const symbol = document.getElementById("symbol").value;
     const interval = document.getElementById("interval").value || "1h";
-    const source = document.getElementById("source").value || "binance";
+    const source = document.getElementById("source").value || "twelve";
 
     if (!symbol) {
         document.getElementById("summary").innerText = "لطفا یک نماد انتخاب کنید.";
@@ -92,7 +87,6 @@ async function loadData() {
     }
 
     document.getElementById("summary").innerText = "در حال بارگذاری داده‌های معاملاتی...";
-    // Clear previous results
     document.getElementById("metrics").innerText = "";
     document.getElementById("interpret").innerText = "";
     document.getElementById("news").innerText = "—";
@@ -124,15 +118,13 @@ async function loadData() {
         candleSeries.setData(chartData);
         if(chart) chart.timeScale().fitContent();
 
-
-        // Show indicators (Adjusted to match main.py's indicator names)
+        // Show indicators 
         const inds = j.indicators || [];
         const ema12 = inds.map(it=>({ time: toUnixSeconds(it.datetime), value: it.EMA12 })).filter(x=>x.value!==null);
         const ema26 = inds.map(it=>({ time: toUnixSeconds(it.datetime), value: it.EMA26 })).filter(x=>x.value!==null);
         
         ema12Series.setData(ema12);
         ema26Series.setData(ema26);
-
 
         // Show trades and metrics
         const trades = j.trades || [];
@@ -148,9 +140,7 @@ async function loadData() {
         document.getElementById("interpret").innerText = (j.interpretation || []).join("\n");
         document.getElementById("news").innerText = (j.headlines || []).join("\n\n---\n\n");
         document.getElementById("news_fa").innerText = (j.translated_headlines || []).join("\n\n---\n\n");
-        // Format ForexFactory data
         document.getElementById("ff").innerText = (j.forexfactory || []).map(f=> `${f.published.split('T')[0]} — ${f.title}`).join("\n\n---\n\n");
-
 
     } catch (e) {
         console.error("Data load error:", e);
@@ -159,19 +149,15 @@ async function loadData() {
     }
 }
 
-// *** CORRECTION: Event Listeners Block ***
+// *** Event Listeners ***
 document.addEventListener("DOMContentLoaded", () => {
     initChart();
-    
-    // Initial load: load symbols and then data
     loadSymbolsAndData(); 
 
     document.getElementById("btn").addEventListener("click", loadData);
     
-    // On source change, reload symbols, which in turn calls loadData
     document.getElementById("source").addEventListener("change", loadSymbolsAndData);
 
-    // On symbol or interval change, load data
     document.getElementById("symbol").addEventListener("change", loadData);
     document.getElementById("interval").addEventListener("change", loadData);
 });
