@@ -378,4 +378,29 @@ async def analyze(symbol: str, interval: str="1h", limit: int=500, source: str="
             "chart": candles,
             "indicators": indicators,
             "trades": trades,
-            "metri
+            "metrics": metrics,
+            "interpretation": interp,
+            "headlines": headlines,
+            "forexfactory": ff
+        }
+
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.get("/symbols")
+def symbols(source: str="binance"):
+    if source=="binance":
+        return ["BTCUSDT","ETHUSDT","DOGEUSDT","BNBUSDT","XRPUSDT","SOLUSDT"]
+    if source=="twelve":
+        return ["AAPL","TSLA","MSFT","EUR/USD","USD/JPY"]
+    return ["BTC-USD","ETH-USD","AAPL","TSLA"]
+
+
+@app.get("/health")
+def health():
+    return {"status":"ok"}
+
+
+# -------- static folder --------
+app.mount("/", StaticFiles(directory="static", html=True), name="static")
